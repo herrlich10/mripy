@@ -1,0 +1,82 @@
+#!/usr/bin/env ipython --
+# -*- coding: utf-8 -*-
+from __future__ import print_function, division, absolute_import, unicode_literals
+import sys, os, argparse, glob
+from os import path
+
+
+if __name__ == '__main__':
+    import script_utils # Append mripy to Python path
+    from mripy import afni, evaluation
+    timer = script_utils.ScriptTimer()
+
+    parser = argparse.ArgumentParser(description='Align T1 (source) to T1 (base), and optionally apply to other images.')
+    parser.add_argument('-b', '-base', '--base', required=True, help='base image')
+    parser.add_argument('-i', '-input', '-s', '-source', '--source', required=True, help='source image')
+    parser.add_argument('-o', '-output', '-p', '-prefix', '--prefix', default=None, help='output prefix (default source+suffix)')
+    parser.add_argument('-u', '-suffix', '--suffix', default='_al', help='output suffix')
+    parser.add_argument('--suffix_1D', default='_mat.aff12.1D', help='transform matrix suffix')
+    parser.add_argument('-f', '-other', '--other', default=[], nargs='+', help='other images that go with source')
+    parser.add_argument('-k', '--keep_tmp', action='store_true', help='keep tmp files')
+    parser.add_argument('-z', '--lazy', action='store_true', help='be lazy and reuse exist transform without quality check')
+    args = parser.parse_args()
+    # Given the chance that upstream folder names may contain space which afni
+    # may not be able to handle even with quotes (e.g., 3dinfo "foo bar+orig"),
+    # it is better to simply assume/require processing in current directory
+    if args.prefix is None:
+        args.prefix = afni.get_prefix(args.source, with_path=True) + args.suffix
+    prefix_1D = args.prefix + args.suffix_1D
+
+    output = args.prefix + '+orig.HEAD'
+    prev_success = (path.exists(output) and afni.check_output(
+        '3dAttribute ALIGN_ANAT_IPY {0}'.format(output))[0][:-1] == 'success')
+    lazy_mode = (args.lazy and path.exists(prefix_1D) and prev_success)
+    if not lazy_mode:
+        # Skull-strip both base and source images if necessary
+        if not path.exists('tmp.base_ns+orig.HEAD'):
+            print('>> 3dSkullStrip: {0}'.format(args.base))
+            !3dSkullStrip -orig_vol -prefix tmp.base_ns -overwrite -input $args.base
+        else:
+            print('>> Reuse: tmp.base_ns+orig')
+        if not path.exists('tmp.source_ns+orig.HEAD'):
+            print('>> 3dSkullStrip: {0}'.format(args.source))
+            !3dSkullStrip -orig_vol -prefix tmp.source_ns -overwrite -input $args.source
+        else:
+            print('>> Reuse: tmp.source_ns+orig')
+
+        # Align the stripped
+        !3dAllineate -cost lpa -check hel -allcost -maxrot 90 \
+            -autoweight -source_automask+2 -twobest 11 -fineblur 1 -cmass \
+            -base tmp.base_ns+orig -input tmp.source_ns+orig \
+            -1Dmatrix_save $prefix_1D \
+            -prefix tmp.source_ns_al -overwrite
+        # Check alignment quality, and quit processing if failed.
+        costs = evaluation.afni_costs('tmp.base_ns+orig', 'tmp.source_ns_al+orig')
+        if costs['lpa'] > 0:
+            print('** ERROR: Alignment failed!')
+            sys.exit(1)
+
+        # Apply the transform to original source, and resample according to base.
+        # The generation of output file implies alignment success.
+        !3dAllineate -final wsinc5 \
+            -base $args.base -input $args.source \
+            -1Dmatrix_apply $prefix_1D \
+            -prefix $args.prefix -overwrite
+        # Explicitly store quality check result in dataset *.HEAD
+        !3drefit -atrstring ALIGN_ANAT_IPY 'success' $args.prefix+orig
+    else:
+        print('>> Running in lazy mode!')
+
+    # Transform other images that aligned with source
+    # Resample using their own grid (don't resample EPI to artifical high-res)
+    for f in args.other:
+        print('>> Transform: {0}'.format(f))
+        prefix_f = afni.get_prefix(f, with_path=True) + args.suffix
+        !3dAllineate -final wsinc5 -newgrid `3dinfo -di $f` \
+            -base $args.base -input $f \
+            -1Dmatrix_apply $prefix_1D \
+            -prefix $prefix_f -overwrite
+
+    # Remove temp files
+    if not args.keep_tmp:
+        !rm tmp.*

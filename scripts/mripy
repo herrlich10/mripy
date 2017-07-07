@@ -1,0 +1,8 @@
+# Get script path
+SCRIPT_PATH="$( cd "$(dirname "${BASH_SOURCE[0]}" )" ; pwd -P )"
+
+# Switch to default python (Python 2.7)
+source switch_python.sh default
+
+# Start ipython, adding mripy to python path
+ipython -i $SCRIPT_PATH/script_utils.py
