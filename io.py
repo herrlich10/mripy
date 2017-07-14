@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import re, glob, shlex, subprocess, sys, os, collections
+import re, glob, shlex, subprocess, sys, os, collections, tempfile, copy
 from os import path
 from datetime import datetime
 import numpy as np
@@ -106,6 +106,15 @@ def parse_physio_file(fname, date=None):
        looking at the smooth trend of the puls waveform.
     6. The sampling rate is slightly (and consistently) slower than specified
        in the manual and in [1].
+
+    Notes about timing
+    ------------------
+    The scanner clock is slightly faster than the wall clock so that 2 sec in
+    real time is recorded as ~2.008 sec in the scanner, affacting both dicom
+    header and physiological footer, even though the actual TR is precisely 2 s
+    (as measured by timing the s triggers with psychtoolbox) and the actual
+    sampling rate of physiological data is precisely 50 Hz (as estimated by
+    dividing the total number of samples by the corrected recording duration).
 
     References
     ----------
@@ -487,12 +496,23 @@ def convert_dicom(folder, output_dir=None, prefix=None):
             -save_details Dimon.details
             -gert_quit_on_err
             '''.format(output_dir, prefix)
-        afni.check_afni_output(cmd)
+        afni.check_output(cmd)
     finally:
         os.chdir(old_path)
 
 
 def convert_dicoms(folder, output_dir=None):
+    '''
+    Parameters
+    ----------
+    folder : str
+        Root folder of rawdata, containing multiple sub-folders of *.IMA files.
+        E.g., folder/anat, folder/func01, folder/func02, etc.
+    output_dir : str
+        Output directory for converted datasets, default is current directory.
+        E.g., the output would look like
+        output_dir/anat+orig, output_dir/func01+orig, etc.
+    '''
     for f in glob.glob(path.join(folder, '*')):
         if path.isdir(f) and len(glob.glob(path.join(f, '*.IMA'))) > 0:
             convert_dicom(f, output_dir)
@@ -535,6 +555,115 @@ def write_afni(prefix, vol, base_img=None):
     write_nii(nii_fname, vol, base_img)
     subprocess.check_call(['3dcopy', nii_fname, prefix+'+orig', '-overwrite'])
     os.remove(nii_fname)
+
+
+class MaskDumper(object):
+    def __init__(self, mask_file):
+        self.mask_file = mask_file
+        self.temp_file = 'tmp.dump.txt'
+        subprocess.check_call(['3dmaskdump', '-mask', self.mask_file, '-index', '-xyz',
+            '-o', self.temp_file, self.mask_file])
+        x = np.loadtxt(self.temp_file)
+        self.index = x[:,0].astype(int)
+        self.ijk = x[:,1:4].astype(int)
+        self.xyz = x[:,4:7]
+        self.mask = x[:,7].astype(int)
+        os.remove(self.temp_file)
+
+    def dump(self, fname):
+        files = glob.glob(fname) if isinstance(fname, six.string_types) else fname
+        subprocess.check_call(['3dmaskdump', '-mask', self.mask_file, '-noijk',
+            '-o', self.temp_file, ' '.join(files)])
+        x = np.loadtxt(self.temp_file)
+        os.remove(self.temp_file)
+        return x
+
+    def undump(self, prefix, x):
+        np.savetxt(self.temp_file, np.c_[self.ijk, x])
+        subprocess.check_call(['3dUndump', '-master', self.mask_file, '-ijk',
+            '-prefix', prefix, '-overwrite', self.temp_file])
+        os.remove(self.temp_file)
+
+
+class Mask(object):
+    def __init__(self, master=None):
+        self.master = master
+        if self.master is not None:
+            res = afni.check_output(['@GetAfniDims', self.master])[0]
+            self.IJK = np.fromiter(map(int, res.split()), int)[:3]
+            res = afni.check_output(['cat_matvec', self.master+'::IJK_TO_DICOM', '-ONELINE'])[0] # IJK_TO_DICOM_REAL??
+            self.MAT = np.fromiter(map(float, res.split()), float).reshape(3,4)
+            idx = read_afni(master).ravel('F') > 0 # afni uses Fortran index here
+            self.index = np.arange(np.prod(self.IJK))[idx]
+
+    def compatible(self, other):
+        return np.all(self.IJK==other.IJK) and np.allclose(self.MAT, other.MAT)
+
+    def __add__(self, other):
+        '''Mask union. Both masks are assumed to share the same grid.'''
+        assert(self.compatible(other))
+        mask = copy.deepcopy(self)
+        mask.index = np.union1d(self.index, other.index)
+        return mask
+
+    def __mul__(self, other):
+        '''Mask intersection. Both masks are assumed to share the same grid.'''
+        assert(self.compatible(other))
+        mask = copy.deepcopy(self)
+        mask.index = np.intersect1d(self.index, other.index)
+        return mask
+
+    def __contains__(self, other):
+        assert(self.compatible(other))
+        return np.all(np.in1d(other.index, self.index, assume_unique=True))
+
+    def constrain(self, func, return_selector=False):
+        '''
+        Parameters
+        ----------
+        func : callable
+            selector = func(x, y, z) is used to select a subset of self.index
+        '''
+        ijk1 = np.c_[np.unravel_index(self.index, self.IJK, order='F') + (np.ones_like(self.index),)]
+        xyz = np.dot(self.MAT, ijk1.T).T # Yes, it is xyz here!
+        selector = func(xyz[:,0], xyz[:,1], xyz[:,2])
+        mask = copy.deepcopy(self)
+        mask.index = mask.index[selector]
+        return mask if not return_selector else (mask, selector)
+
+    def infer_selector(self, smaller):
+        assert(smaller in self)
+        selector = np.in1d(self.index, smaller.index, assume_unique=True)
+        return selector
+
+    def near(self, x, y, z, r, **kwargs):
+        '''mm'''
+        func = (lambda X, Y, Z: (X-x)**2 + (Y-y)**2 + (Z-z)**2 < r**2)
+        return self.constrain(func, **kwargs)
+
+    def dump(self, fname):
+        files = glob.glob(fname) if isinstance(fname, six.string_types) else fname
+        return np.vstack(read_afni(f).T.flat[self.index] for f in files).T.squeeze()
+
+    def undump(self, prefix, x, method='nibabel'):
+        if method == 'nibabel': # Much faster
+            temp_file = 'tmp.%s.nii' % next(tempfile._get_candidate_names())
+            vol = np.zeros(self.IJK) # Don't support int64?？
+            assert(self.index.size==x.size)
+            vol.T.flat[self.index] = x
+            mat = np.dot(np.diag([-1,-1, 1]), self.MAT) # Have to do this to get RSA (otherwise it's LSP), don't know why... (PS. ijk -> xzy)
+            aff = nibabel.affines.from_matvec(mat[:,:3], mat[:,3])
+            img = nibabel.Nifti1Image(vol, aff)
+            nibabel.save(img, temp_file)
+            subprocess.check_call(['3dcopy', temp_file, prefix+'+orig', '-overwrite']) # However, still TLRC inside...
+            os.remove(temp_file)
+        elif method == '3dUndump': # More robust
+            temp_file = 'tmp.%s.txt' % next(tempfile._get_candidate_names())
+            ijk = np.c_[np.unravel_index(self.index, self.IJK, order='F')]
+            np.savetxt(temp_file, np.c_[ijk, x])
+            subprocess.check_call(['3dUndump', '-master', self.master, '-ijk',
+                '-prefix', prefix, '-overwrite', temp_file])
+            os.remove(temp_file)
 
 
 if __name__ == '__main__':

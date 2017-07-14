@@ -1,0 +1,65 @@
+#!/usr/bin/env ipython --
+# -*- coding: utf-8 -*-
+from __future__ import print_function, division, absolute_import, unicode_literals
+import sys, os, argparse, glob, re
+from os import path
+
+
+if __name__ == '__main__':
+    import script_utils # Append mripy to Python path
+    from mripy import afni, evaluation
+    timer = script_utils.ScriptTimer()
+
+    parser = argparse.ArgumentParser(description='Create depth mask from surface ROI.')
+    parser.add_argument('-i', '-input', '-roi', '--roi', required=True, nargs='+', help='surface ROI(s)')
+    parser.add_argument('-b', '-base', '--base', required=True, help='grid parent')
+    parser.add_argument('-s', '--suma', default='../SUMA', help='SUMA directory (default ../SUMA)')
+    parser.add_argument('-v', '--surf_vol', default='SurfVol_Alnd_Exp+orig', help='SurfVol (default SurfVol_Alnd_Exp+orig)')
+    parser.add_argument('-o', '-output', '-prefix', '--prefix', default=None, help='output prefix (default as 1st ROI)')
+    args = parser.parse_args()
+    suma_path = path.expanduser(args.suma)
+    suma_subj = afni.get_suma_subj(suma_path)
+    rois = [path.basename(roi)[:-9] for roi in args.roi] # Remove extension *.niml.roi
+    hemis = [re.search(r'\b([lr]h)\b', roi).group(1) for roi in rois] # Hint for lh/rh in fname
+    if args.prefix is None:
+        args.prefix = rois[0]
+
+    # Convert *.niml.roi to *.niml.dset
+    for k, roi in enumerate(args.roi):
+        !ROI2dataset -prefix tmp.{rois[k]} -overwrite -input $roi
+
+    # Make depth masks
+    for surf in ['smoothwm', 'pial']:
+        for k, roi in enumerate(rois):
+            !3dSurfMask \
+                -spec ${surf}_${hemi}.spec \
+                -surf ${surface} \
+                -sv SurfVol_Alnd_Exp+orig \
+                -grid_parent mask.ssfp_brain+orig \
+                -fill_method FAST \
+                -prefix roi.depth.${hemi}.V1.${surface} -overwrite
+        end
+    end
+    3dcalc -l roi.depth.lh.V1.pial.d+orig -r roi.depth.rh.V1.pial.d+orig \
+        -expr 'step(l+2)*l+step(r+2)*r' -prefix roi.depth.V1.pial.d -overwrite
+    3dcalc -l roi.depth.lh.V1.smoothwm.d+orig -r roi.depth.rh.V1.smoothwm.d+orig \
+        -expr 'step(10-l)*step(l+5)*l+step(10-r)*step(r+5)*r' -prefix roi.depth.V1.smoothwm.d -overwrite
+
+    # 3dcalc -l roi.lh.V1+orig -r roi.rh.V1+orig -expr 'max(l,r)' -prefix roi.V1 -overwrite
+
+    # Remove temp files
+    !rm tmp.*
+
+
+    # Create non-depth-dependent mask
+    # Unfortunately, the mask generated this way tends to be bulky and hollow
+    # for k, roi in enumerate(rois):
+    #     !3dSurf2Vol \
+    #         -spec $suma_path/{suma_subj}_{hemis[k]}.spec \
+    #         -surf_A smoothwm \
+    #         -surf_B pial \
+    #         -sv $args.surf_vol \
+    #         -sdata tmp.{roi}.niml.dset \
+    #         -map_func mask \
+    #         -grid_parent $args.base \
+    #         -prefix $roi -overwrite

@@ -10,7 +10,7 @@ if __name__ == '__main__':
     from mripy import afni, evaluation
     timer = script_utils.ScriptTimer()
 
-    parser = argparse.ArgumentParser(desciption='Align SurfVol to experiment anat.')
+    parser = argparse.ArgumentParser(description='Align SurfVol to experiment anat.')
     parser.add_argument('-b', '-base', '-e', '--exp_anat', required=True, help='experiment anat (base image)')
     parser.add_argument('-s', '-suma', '--suma', default='../SUMA', help='SUMA directory')
     parser.add_argument('-i', '-input', '-v', '--surf_vol', default=None, help='SurfVol (source image), default copy from SUMA')
@@ -21,6 +21,8 @@ if __name__ == '__main__':
     suma_subj = afni.get_suma_subj(suma_path)
     if args.surf_vol is None:
         args.surf_vol = path.join(suma_path, '%s_SurfVol+orig' % suma_subj)
+    if args.prefix is None:
+        args.prefix = 'SurfVol_Alnd_Exp'
 
     !align_anat.ipy -b $args.exp_anat -i $args.surf_vol -o $args.prefix --suffix_1D .A2E.1D
     if not path.exists(args.prefix + '+orig.HEAD'): # Check whether align_anat is successful
