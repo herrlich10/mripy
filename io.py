@@ -586,15 +586,23 @@ class MaskDumper(object):
 
 
 class Mask(object):
-    def __init__(self, master=None):
+    def __init__(self, master=None, kind='mask'):
         self.master = master
         if self.master is not None:
-            res = afni.check_output(['@GetAfniDims', self.master])[0]
+            res = afni.check_output(['@GetAfniDims', self.master])[-2] # There can be leading warnings for oblique datasets
             self.IJK = np.fromiter(map(int, res.split()), int)[:3]
-            res = afni.check_output(['cat_matvec', self.master+'::IJK_TO_DICOM', '-ONELINE'])[0] # IJK_TO_DICOM_REAL??
-            self.MAT = np.fromiter(map(float, res.split()), float).reshape(3,4)
-            idx = read_afni(master).ravel('F') > 0 # afni uses Fortran index here
-            self.index = np.arange(np.prod(self.IJK))[idx]
+            # res = afni.check_output(['cat_matvec', self.master+'::IJK_TO_DICOM', '-ONELINE'])[-2] # IJK_TO_DICOM_REAL??
+            # self.MAT = np.fromiter(map(float, res.split()), float).reshape(3,4)
+            res = afni.check_output(['3dAttribute', 'ORIGIN', self.master])[-2]
+            ORIGIN = np.fromiter(map(float, res.split()), float)
+            res = afni.check_output(['3dAttribute', 'DELTA', self.master])[-2]
+            DELTA = np.fromiter(map(float, res.split()), float)
+            self.MAT = np.c_[np.diag(DELTA), ORIGIN][[0,2,1],:]
+            if kind == 'mask':
+                idx = read_afni(master).ravel('F') > 0 # afni uses Fortran index here
+                self.index = np.arange(np.prod(self.IJK))[idx]
+            elif kind == 'full':
+                self.index = np.arange(np.prod(self.IJK))
 
     def compatible(self, other):
         return np.all(self.IJK==other.IJK) and np.allclose(self.MAT, other.MAT)
@@ -613,11 +621,21 @@ class Mask(object):
         mask.index = np.intersect1d(self.index, other.index)
         return mask
 
+    def __sub__(self, other):
+        '''
+        Voxels that are in the 1st mask but not in the 2nd mask.
+        Both masks are assumed to share the same grid.
+        '''
+        assert(self.compatible(other))
+        mask = copy.deepcopy(self)
+        mask.index = mask.index[~np.in1d(self.index, other.index, assume_unique=True)]
+        return mask
+
     def __contains__(self, other):
         assert(self.compatible(other))
         return np.all(np.in1d(other.index, self.index, assume_unique=True))
 
-    def constrain(self, func, return_selector=False):
+    def constrain(self, func, return_selector=False, inplace=False):
         '''
         Parameters
         ----------
@@ -627,7 +645,7 @@ class Mask(object):
         ijk1 = np.c_[np.unravel_index(self.index, self.IJK, order='F') + (np.ones_like(self.index),)]
         xyz = np.dot(self.MAT, ijk1.T).T # Yes, it is xyz here!
         selector = func(xyz[:,0], xyz[:,1], xyz[:,2])
-        mask = copy.deepcopy(self)
+        mask = self if inplace else copy.deepcopy(self)
         mask.index = mask.index[selector]
         return mask if not return_selector else (mask, selector)
 
@@ -638,7 +656,30 @@ class Mask(object):
 
     def near(self, x, y, z, r, **kwargs):
         '''mm'''
-        func = (lambda X, Y, Z: (X-x)**2 + (Y-y)**2 + (Z-z)**2 < r**2)
+        if np.isscalar(r):
+            r = np.ones(3) * r
+        func = (lambda X, Y, Z: ((X-x)/r[0])**2 + ((Y-y)/r[1])**2 + ((Z-z)/r[2])**2 < 1)
+        return self.constrain(func, **kwargs)
+
+    def ball(self, c, r, **kwargs):
+        return self.near(*c, r, **kwargs)
+
+    def cylinder(self, c, r, **kwargs):
+        '''The elongated axis is represented as nan'''
+        if np.isscalar(r):
+            r = np.ones(3) * r
+        func = (lambda X, Y, Z: np.nansum(np.c_[((X-c[0])/r[0])**2, ((Y-c[1])/r[1])**2, ((Z-c[2])/r[2])**2], axis=1) < 1)
+        return self.constrain(func, **kwargs)
+
+    def slab(self, x1=None, x2=None, y1=None, y2=None, z1=None, z2=None, **kwargs):
+        limits = np.dot(self.MAT, np.c_[np.r_[0,0,0,1], np.r_[self.IJK-1,1]])
+        x1 = np.min(limits[0,:]) if x1 is None else x1
+        x2 = np.max(limits[0,:]) if x2 is None else x2
+        y1 = np.min(limits[1,:]) if y1 is None else y1
+        y2 = np.max(limits[1,:]) if y2 is None else y2
+        z1 = np.min(limits[2,:]) if z1 is None else z1
+        z2 = np.max(limits[2,:]) if z2 is None else z2
+        func = (lambda X, Y, Z: (x1<X)&(X<x2) & (y1<Y)&(Y<y2) & (z1<Z)&(Z<z2))
         return self.constrain(func, **kwargs)
 
     def dump(self, fname):
@@ -664,6 +705,22 @@ class Mask(object):
             subprocess.check_call(['3dUndump', '-master', self.master, '-ijk',
                 '-prefix', prefix, '-overwrite', temp_file])
             os.remove(temp_file)
+
+
+class BallMask(Mask):
+    def __init__(self, master, c, r):
+        Mask.__init__(self, master, kind='full')
+        self.ball(c, r, inplace=True)
+
+class CylinderMask(Mask):
+    def __init__(self, master, c, r):
+        Mask.__init__(self, master, kind='full')
+        self.cylinder(c, r, inplace=True)
+
+class SlabMask(Mask):
+    def __init__(self, master, x1=None, x2=None, y1=None, y2=None, z1=None, z2=None):
+        Mask.__init__(self, master, kind='full')
+        self.slab(x1, x2, y1, y2, z1, z2, inplace=True)
 
 
 if __name__ == '__main__':
