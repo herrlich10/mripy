@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import sys, re
+import sys, re, subprocess
 from . import six
 
 
@@ -39,3 +39,19 @@ def format_duration(duration, format='standard'):
             break
     formatted = ((('%d' if k<len(values)-1 else '%.3f') % values[k]) + units[k] for k in range(len(values)) if k >= K)
     return ' '.join(formatted)
+
+
+class ParallelCaller(object):
+    def __init__(self):
+        self.ps = []
+
+    def check_call(self, cmd, **kwargs):
+        '''Asynchronous check_call (return immediately).'''
+        if isinstance(cmd, six.string_types):
+            cmd = shlex.split(cmd) # Split by space, preserving quoted substrings
+        p = subprocess.Popen(cmd, **kwargs)
+        self.ps.append(p)
+
+    def wait(self):
+        '''Wail for all parallel processes to finish (= wait for the slowest one).'''
+        return [p.wait() for p in self.ps]

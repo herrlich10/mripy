@@ -7,7 +7,7 @@ from os import path
 
 if __name__ == '__main__':
     import script_utils # Append mripy to Python path
-    from mripy import afni, evaluation
+    from mripy import afni, utils
     timer = script_utils.ScriptTimer()
 
     parser = argparse.ArgumentParser(description='Create depth mask from surface ROI.')
@@ -55,21 +55,27 @@ if __name__ == '__main__':
     if path.exists(prefix + '+orig.HEAD'):
         print('>> Reuse {0}'.format(prefix))
     else:
+        pc = utils.ParallelCaller() # Execute 4 instances of 3dSurfMask in parallel
         for hemi in ['lh', 'rh']:
             for surface in ['smoothwm', 'pial']:
                 print('>> Computing tmp.{0}.{1}.{2}.d+orig'.format(prefix, hemi, surface))
-                !3dSurfMask \
-                    -spec $suma_path/{suma_subj}_{hemi}.spec \
-                    -surf $surface \
-                    -sv $args.surf_vol \
-                    -grid_parent $args.base \
-                    -fill_method FAST \
-                    -prefix tmp.{prefix}.{hemi}.{surface} -overwrite
+                pc.check_call(['3dSurfMask', \
+                    '-spec', '{0}/{1}_{2}.spec'.format(suma_path, suma_subj, hemi),
+                    '-surf', surface,
+                    '-sv', args.surf_vol,
+                    '-grid_parent', args.base,
+                    '-fill_method', 'FAST',
+                    '-prefix', '.'.join(('tmp', prefix, hemi, surface)), '-overwrite'])
+        pc.wait() # Wait for all 3dSurfMask instances
+        for hemi in ['lh', 'rh']:
+            # Calculate relative depth for the whole volume
             !3dcalc -a tmp.{prefix}.{hemi}.smoothwm.d+orig -b tmp.{prefix}.{hemi}.pial.d+orig \
                 -expr '-a/(b-a)' -prefix tmp.{prefix}.{hemi} -overwrite
+            # Keep only near-surface voxels
             !3dcalc -a tmp.{prefix}.{hemi}+orig -b tmp.{prefix}.{hemi}.pial.d+orig \
                 -expr 'a*step(a+0.5)*step(1.5-a)*step(5-b)*step(b+1)' \
                 -prefix tmp.{prefix}.{hemi} -overwrite
+        # Combine left and right hemisphere
         !3dcalc -l tmp.{prefix}.lh+orig -r tmp.{prefix}.rh+orig \
             -expr 'l+r' -prefix $prefix -overwrite
 

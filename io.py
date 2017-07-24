@@ -684,7 +684,15 @@ class Mask(object):
 
     def dump(self, fname):
         files = glob.glob(fname) if isinstance(fname, six.string_types) else fname
-        return np.vstack(read_afni(f).T.flat[self.index] for f in files).T.squeeze()
+        # return np.vstack(read_afni(f).T.flat[self.index] for f in files).T.squeeze() # Cannot handle 4D...
+        data = []
+        for f in files:
+            vol = read_afni(f)
+            S = vol.shape
+            T = list(range(vol.ndim))
+            T[:3] = T[:3][::-1]
+            data.append(vol.transpose(*T).reshape(np.prod(S[:3]),int(np.prod(S[3:])))[self.index,:])
+        return np.hstack(data).squeeze()
 
     def undump(self, prefix, x, method='nibabel'):
         if method == 'nibabel': # Much faster
