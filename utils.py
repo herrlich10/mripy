@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import sys, re, subprocess
+import sys, os, re, glob, shlex, subprocess, time
 from . import six
 
 
@@ -47,11 +47,68 @@ class ParallelCaller(object):
 
     def check_call(self, cmd, **kwargs):
         '''Asynchronous check_call (return immediately).'''
-        if isinstance(cmd, six.string_types):
+        splited = isinstance(cmd, six.string_types) and not ('shell' in kwargs and kwargs['shell'])
+        if splited:
             cmd = shlex.split(cmd) # Split by space, preserving quoted substrings
+        if len(self.ps) == 0:
+            self._start_time = time.time()
+        print('>> job {0}: {1}'.format(len(self.ps), ' '.join(cmd) if splited else cmd))
         p = subprocess.Popen(cmd, **kwargs)
         self.ps.append(p)
 
     def wait(self):
         '''Wail for all parallel processes to finish (= wait for the slowest one).'''
-        return [p.wait() for p in self.ps]
+        codes = [p.wait() for p in self.ps]
+        duration = time.time() - self._start_time
+        print('>> All {0} jobs done in {1}.'.format(len(self.ps), format_duration(duration)))
+        self.ps = [] # Reset subprocess list
+        return codes
+
+
+def parallel_1D(cmd, in_file, prefix, n_jobs=1, combine_output=True, **kwargs):
+    '''
+    Parameters
+    ----------
+        cmd : str
+            The command for parallel execution, must contain two placeholders
+            {prefix} and {in_file}, which will be substituded with ''.format().
+            As expected, other {} must be escaped as {{}}.
+            For example,
+                parallel_1D("3dTcat -prefix {prefix} -overwrite \
+                    {in_file}'{{0:9}}'", 'xyz_list.1D', 'test', n_jobs=4)
+    '''
+    # Count the number of lines
+    with open(in_file) as fi:
+        n_lines = sum(1 for line in fi if line.strip() and not line.startswith('#'))
+    # Split 1D file
+    files = [in_file+'-p{0:03d}'.format(j) for j in range(n_jobs)]
+    job_size = (n_lines-1)//n_jobs + 1 # ceil
+    with open(in_file) as fi:
+        lines = (line for line in fi if line.strip() and not line.startswith('#'))
+        for j in range(n_jobs):
+            with open(files[j], 'w') as fj:
+                for k in range(job_size):
+                    try:
+                        fj.write(next(lines))
+                    except StopIteration:
+                        pass
+    # Parallel call
+    prefixs = [prefix+'-p{0:03d}'.format(j) for j in range(n_jobs)]
+    pc = ParallelCaller() # Execute n_jobs instances of cmd in parallel
+    for j in range(n_jobs):
+        pc.check_call(cmd.format(in_file=files[j], prefix=prefixs[j]), **kwargs)
+    pc.wait() # Wait for all instances
+    for j in range(n_jobs):
+        os.remove(files[j])
+    # Combine output (1D) files
+    if combine_output:
+        outputs = glob.glob(prefix+'-*')
+        match = re.match('{0}(.+)'.format(prefixs[0]), outputs[0])
+        suffix = match.group(1)
+        with open(prefix+suffix, 'w') as fo:
+            for j in range(n_jobs):
+                with open(outputs[j]) as fi:
+                    for line in fi:
+                        if line.strip() and not line.startswith('#'):
+                            fo.write(line)
+                os.remove(outputs[j])

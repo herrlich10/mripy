@@ -1,0 +1,101 @@
+#!/usr/bin/env ipython --
+# -*- coding: utf-8 -*-
+from __future__ import print_function, division, absolute_import, unicode_literals
+import sys, os, argparse, glob, re
+from os import path
+import numpy as np
+
+
+if __name__ == '__main__':
+    import script_utils # Append mripy to Python path
+    from mripy import afni, utils, io
+    timer = script_utils.ScriptTimer()
+
+    parser = argparse.ArgumentParser(description='')
+    # parser.add_argument('-i', '-input', '-roi', '--roi', required=True, nargs='+', help='surface ROI(s)')
+    parser.add_argument('-b', '-base', '--base', required=True, help='grid parent')
+    parser.add_argument('-s', '--suma', default='../SUMA', help='SUMA directory (default ../SUMA)')
+    parser.add_argument('-v', '--surf_vol', default='SurfVol_Alnd_Exp+orig', help='SurfVol (default SurfVol_Alnd_Exp+orig)')
+    # parser.add_argument('-c', '--combine', action='store_true', help='combine ROIs to get a single mask')
+    # parser.add_argument('-o', '-output', '-prefix', '--prefix', default=None, help='output prefix (default as 1st ROI)')
+    args = parser.parse_args()
+    suma_path = path.expanduser(args.suma)
+    suma_subj = afni.get_suma_subj(suma_path)
+    # rois = [path.basename(roi)[:-9] for roi in args.roi] # Remove extension *.niml.roi
+    # hemis = [re.search(r'\b([lr]h)\b', roi).group(1) for roi in rois] # Hint for lh/rh in fname
+    # if args.prefix is None:
+    #     args.prefix = re.sub(r'(\W|_)?[lr]h', '', rois[0])
+    # cb = 'tmp.' if args.combine else ''
+    depth_range = [0, 1]
+
+    print(f"{suma_path}/{suma_subj}_{'lh'}.spec")
+    # Extract voxel list from the masked volume
+    mask = io.Mask(args.base)
+    !3dmaskdump -xyz -mask {args.base} {args.base} > tmp.ijkxyzv.1D
+    !3dTcat -prefix tmp.xyz_list -overwrite \
+        tmp.ijkxyzv.1D'[3:5]'
+    x = np.loadtxt('tmp.ijkxyzv.1D')
+    ijk, xyz = x[:,0:3], x[:,3:6]
+    index = {}
+    dist = {}
+    distvec = {}
+    surfs = ['smoothwm', 'pial']
+    hemis = ['lh', 'rh']
+    for surf in surfs:
+        for hemi in hemis:
+            prefix = 'tmp.{0}.{1}'.format(surf, hemi)
+            # For each voxel in the list, find closest node on the surface
+            # *.closest.1D.dset: 0: node index, 1: distance, 2-4: voxel xyz, 5-7: node xyz
+            fname = prefix + '.closest.1D.dset'
+            if not path.exists(fname): # Lazy evaluation
+                utils.parallel_1D('SurfaceMetrics -prefix {{prefix}} -overwrite \
+                    -i "{surf}" -sv "{sv}" -closest_node {{in_file}}'.format(
+                        surf='{0}/{1}.{2}.asc'.format(suma_path, hemi, surf), sv=args.surf_vol),
+                    'tmp.xyz_list.1D', prefix, n_jobs=12)
+            else:
+                print('>> Reuse existing "{0}"'.format(fname))
+            # Compute distance vector orientation
+            x = np.loadtxt(fname)
+            index[hemi] = x[:,0] # Index of the closest node
+            dist[hemi] = x[:,1] # Distance to the closest node
+            distvec[hemi] = (x[:,5:8] - x[:,2:5]) / x[:,1:2] # Unit vector
+            # For each node on the surface, compute normal vector and curvature
+            # (*.NodeNormSeg.1D): coordinates of the two end-points of the normal
+            # *.NodeNorm.1D.do: node index + normal unit vector
+            # *.curv.1D.dset: 0: index, 1-6: 1st/2nd principal directions, 7/8: k1/k2 9: norm(k1,k2)
+            # (*.curv.niml.dset): same as 1D.dset, but encoded
+            # (*.curv.1D.do): 1st/2nd principal directions
+            fname = prefix + '.curv.1D.dset'
+            if not path.exists(fname): # Lazy evaluation, although this op is quite fast
+                !SurfaceMetrics -prefix {prefix} -overwrite \
+                    -i "{suma_path}/{hemi}.{surf}.asc" -sv "{args.surf_vol}" \
+                    -node_normals -curv
+            else:
+                print('>> Reuse existing "{0}"'.format(fname))
+            # Load normal and curvature of the closest node
+            x = np.loadtxt(fname)
+
+        # Merge results from two hemispheres
+        dist[surf] = np.minimum(dist[hemis[0]], dist[hemis[1]])
+        distvec[surf] = np.where((dist[hemis[0]] < dist[hemis[1]])[:,np.newaxis],
+            distvec[hemis[0]], distvec[hemis[1]]) # Broadcast into same shape
+        # !3dcalc -prefix tmp.d_{surf} -overwrite \
+        #     -l tmp.d_{surf}.lh+orig -r tmp.d_{surf}.rh+orig -expr 'min(l,r)'
+    # Combine results for two surfaces
+    sign_ = np.where(np.sum(distvec[surfs[0]] * distvec[surfs[1]], axis=1) < 0,
+        0, np.where(dist[surfs[0]] < dist[surfs[1]], -1, 1))
+    thickness = np.where(sign_ == 0,
+        dist[surfs[0]] + dist[surfs[1]], np.abs(dist[surfs[0]] - dist[surfs[1]]))
+    rho = np.where(sign_ < 0, -dist[surfs[0]], dist[surfs[0]]) / thickness
+    rho[(rho < depth_range[0]) | (rho > depth_range[1])] = 0
+    # np.savetxt('tmp.debug.1D', np.c_[sign_, thickness, dist['smoothwm'], dist['pial']], fmt='%.6e')
+    # np.savetxt('tmp.depth_equidist.1D', np.c_[ijk, rho], fmt=' '.join(['%d']*3+['%.6f']))
+    # !3dUndump -prefix depth_equidist -overwrite \
+    #     -master {args.base} -datum float \
+    #     tmp.depth_equidist.1D
+    mask.undump('sign', sign_)
+    mask.undump('thickness', thickness)
+    mask.undump('depth_equidist', rho)
+
+    # Remove temp files
+    # !rm tmp.*

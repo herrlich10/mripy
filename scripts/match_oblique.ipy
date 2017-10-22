@@ -1,0 +1,75 @@
+#!/usr/bin/env ipython --
+# -*- coding: utf-8 -*-
+from __future__ import print_function, division, absolute_import, unicode_literals
+import argparse, textwrap
+from os import path
+
+
+def parse_suffix(fnames):
+    groups = {}
+    for k, fname in enumerate(fnames):
+        if fname.startswith('_') and '+' not in fname:
+            suffix = fname
+            groups[suffix] = []
+        else:
+            if k == 0:
+                suffix = ''
+                groups[suffix] = []
+            groups[suffix].append(fname)
+    return groups
+
+
+if __name__ == '__main__':
+    import script_utils # Append mripy to Python path
+    from mripy import afni, utils
+    timer = script_utils.ScriptTimer()
+
+    parser = argparse.ArgumentParser(description='Match oblique and deoblique. The 1st volume of 1st -b is treated as template.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent('''\
+            examples:
+              1) Deoblique T1+orig according to epi01+orig[0] as T1_epi+orig,
+                 and refit epi01+orig, epi02+orig, ..., epi04+orig to be cardinal:
+                $ match_oblique.ipy -b epi??+orig.HEAD -i _epi T1+orig
+              2) Same as 1), but use epi01+orig[2] as template:
+                $ match_oblique.ipy -b epi??+orig.HEAD -i _epi T1+orig -t 2\
+            '''))
+    parser.add_argument('-b', '-base', '--base', required=True, nargs='+', help='deoblique by refit')
+    parser.add_argument('-i', '-input', '--input', required=True, nargs='+', help='deoblique by resampling')
+    parser.add_argument('-t', '--t', default='0', help='base sub-brick')
+    args = parser.parse_args()
+    # Parse suffix
+    args.base = parse_suffix(args.base)
+    args.input = parse_suffix(args.input)
+    args.t = int(args.t)
+    # Extrace template
+    template = list(args.base.values())[0][0] + "'[0]'" # Still need single quotes here
+    print('>> Use {0} as tempalte'.format(template))
+    # Deoblique by resampling
+    for suffix, files in args.input.items():
+        for f in files:
+            prefix = afni.get_prefix(f) + suffix
+            print('>> Deoblique {0}'.format(prefix))
+            # Rotate and resample dataset to plumb, according to its oblique angle stored in the header
+            !3dWarp -oblique2card -prefix $prefix -overwrite $f
+            # Rotate and resample dataset from plumb to base oblique. AFNI bug: the resultant dataset will be incorrectly labeled as plumb
+            !3dWarp -card2oblique $template -prefix $prefix -overwrite $prefix+orig
+            # Crop extra margin after rotation
+            !3dAutobox -prefix $prefix -overwrite $prefix+orig
+            # Drop rotational information in the header. This is redundant due to previous bug...
+            !3drefit -deoblique $prefix+orig
+    # Deoblique by refit
+    for suffix, files in args.base.items():
+        for f in files:
+            if suffix == '':
+                print('>> Refit {0}'.format(f))
+                # Drop rotational information in base header, and pretend it is plumb
+                !3drefit -deoblique $f
+            else:
+                prefix = afni.get_prefix(f) + suffix
+                print('>> Refit {0}'.format(prefix))
+                !3dcopy $f $prefix+orig
+                !3drefit -deoblique $prefix+orig
+
+    # Remove temp files
+    # !rm tmp.*

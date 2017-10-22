@@ -12,7 +12,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Align SurfVol to experiment anat.')
     parser.add_argument('-b', '-base', '-e', '--exp_anat', required=True, help='experiment anat (base image)')
-    parser.add_argument('-s', '-suma', '--suma', default='../SUMA', help='SUMA directory')
+    parser.add_argument('-s', '-suma', '--suma', default='../SUMA', help='SUMA directory (default ../SUMA)')
     parser.add_argument('-i', '-input', '-v', '--surf_vol', default=None, help='SurfVol (source image), default copy from SUMA')
     parser.add_argument('-o', '-output', '-p', '-prefix', '--prefix', default=None, help='output prefix (default SurfVol_Alnd_Exp)')
     parser.add_argument('-r', '--refit_base', action='store_true', help='store S2E transform also in base image')
@@ -27,6 +27,8 @@ if __name__ == '__main__':
     !align_anat.ipy -b $args.exp_anat -i $args.surf_vol -o $args.prefix --suffix_1D .A2E.1D
     if not path.exists(args.prefix + '+orig.HEAD'): # Check whether align_anat is successful
         sys.exit(1)
+    # This is the traditional "forward" transform that maps old data to new space
+    !cat_matvec {args.prefix+'.A2E.1D'} -I -ONELINE > {args.prefix+'.E2A.1D'}
 
     # Copy surface-experiment-mapping matrices to exp_anat, so that
     # you can also use exp_anat as SurfVol

@@ -330,6 +330,7 @@ def parse_dicom_header(fname, fields=None):
 
 SERIES_PATTERN = r'.+?\.(\d{4})\.' # Capture series number
 MULTI_SERIES_PATTERN = r'.+?\.(\d{4})\.(\d{4}).+(\d{8,})' # Capture series number, slice number, uid
+MULTI_SERIES_PATTERN2 = r'.+?\.(\d{4})\.(\d{4}).+(\d{5,}\.\d{8,})' # Capture series number, slice number, uid (5-6.8-9)
 
 def _sort_multi_series(files):
     '''
@@ -339,8 +340,9 @@ def _sort_multi_series(files):
     timestamps = []
     infos = []
     for f in files:
-        match = re.search(MULTI_SERIES_PATTERN, f)
-        infos.append((f, int(match.group(2)), int(match.group(3))))
+        match = re.search(MULTI_SERIES_PATTERN2, f)
+        # infos.append((f, int(match.group(2)), int(match.group(3))))
+        infos.append((f, int(match.group(2)), float(match.group(3))))
     prev_slice = sys.maxsize
     for f, curr_slice, timestamp in sorted(infos, key=lambda x: x[-1]):
         if curr_slice <= prev_slice and (prev_slice == sys.maxsize or curr_slice in slices):
@@ -662,7 +664,8 @@ class Mask(object):
         return self.constrain(func, **kwargs)
 
     def ball(self, c, r, **kwargs):
-        return self.near(*c, r, **kwargs)
+        # return self.near(*c, r, **kwargs) # For python 2.7 compatibility
+        return self.near(c[0], c[1], c[2], r, **kwargs)
 
     def cylinder(self, c, r, **kwargs):
         '''The elongated axis is represented as nan'''
@@ -714,16 +717,26 @@ class Mask(object):
                 '-prefix', prefix, '-overwrite', temp_file])
             os.remove(temp_file)
 
+    @property
+    def ijk(self):
+        return np.c_[np.unravel_index(self.index, self.IJK, order='F')]
+
+    @property
+    def xyz(self):
+        return np.dot(self.MAT[:,:3], self.ijk.T).T + self.MAT[:,3]
+
 
 class BallMask(Mask):
     def __init__(self, master, c, r):
         Mask.__init__(self, master, kind='full')
         self.ball(c, r, inplace=True)
 
+
 class CylinderMask(Mask):
     def __init__(self, master, c, r):
         Mask.__init__(self, master, kind='full')
         self.cylinder(c, r, inplace=True)
+
 
 class SlabMask(Mask):
     def __init__(self, master, x1=None, x2=None, y1=None, y2=None, z1=None, z2=None):

@@ -8,22 +8,23 @@ from matplotlib import pyplot as plt
 
 if __name__ == '__main__':
     import script_utils # Append mripy to Python path
+    from mripy import plots
 
-    parser = argparse.ArgumentParser(description='Sort raw dicom files and copy them into separate folders.',
+    parser = argparse.ArgumentParser(description='',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent('''\
             examples:
-              1) List all datasets in ~/raw_data
-                $ sort_dicom.py -l -i ~/raw_data
-              2) Copy 0002 to ~/sorted_data/anat, 0003-0006 to ~/sorted_data/func01-04,
-                 0008 as func05, 0010 as func06, 0012 as func07
-                $ extract_phys.py -i ~/raw_data -o ~/sorted_data -a 2 -f 3-6 8..12(2)\
+              1) Plot head motion across multiple runs
+                $ 1dplot.py -vr dfile.epi*.1D
             '''))
-    # parser.add_argument('-i', '--input', dest='input_dir', default='.', metavar='path/to/input/dir', help='path/to/input/dir containing raw dicom files, default: pwd')
-    parser.add_argument('fname', metavar='1dfile')
+    parser.add_argument('files', nargs='+', help='1D file(s)')
+    parser.add_argument('-vr', '--volreg', action='store_true', help='plot head motion')
     args = parser.parse_args()
 
-    x = np.loadtxt(args.fname)
-    plt.plot(x)
+    if args.volreg:
+        plots.plot_volreg(args.files)
+    else:
+        x = np.loadtxt(args.files[0])
+        plt.plot(x)
     plt.show()
     plt.close()

@@ -89,8 +89,10 @@ def get_prefix(fname, with_path=False):
 def get_suma_subj(suma_path):
     '''Infer SUMA subject given path to SUMA folder'''
     try:
-        spec_file = glob.glob(path.join(suma_path, '*_both.spec'))[0]
-        return path.basename(spec_file)[:-10]
+        # spec_file = glob.glob(path.join(suma_path, 'std.60.*_both.spec'))[0]
+        # return path.basename(spec_file)[7:-10]
+        surf_vol = glob.glob(path.join(suma_path, '*_SurfVol+orig.HEAD'))[0]
+        return path.basename(surf_vol)[:-18]
     except IndexError:
         return None
 
