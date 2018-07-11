@@ -9,7 +9,7 @@ if [ ! -d $CONFIG_DIR ]; then
 fi
 CONFIG_FILE=$CONFIG_DIR/python3_path
 if [ ! -f $CONFIG_FILE ]; then
-    PYTHON3_PATH=`find ~ -iregex ".*/anaconda/bin"`
+    PYTHON3_PATH=`find ~ -iregex ".*/anaconda3/bin"`
     echo $PYTHON3_PATH > $CONFIG_FILE
 else
     PYTHON3_PATH=`cat $CONFIG_FILE`

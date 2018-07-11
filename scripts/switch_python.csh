@@ -2,14 +2,14 @@
 # This is the only way to affect the current shell session
 
 # Find anaconda path
-# set PYTHON3_PATH = "/Users/qcc/PythonPlus/anaconda/bin"
+# set PYTHON3_PATH = "/Users/qcc/PythonPlus/anaconda3/bin"
 set CONFIG_DIR = ~/.mripy
 if ( ! -d $CONFIG_DIR ) then
     mkdir $CONFIG_DIR
 endif
 set CONFIG_FILE = $CONFIG_DIR/python3_path
 if ( ! -e $CONFIG_FILE ) then
-    set PYTHON3_PATH = `find ~ -iregex ".*/anaconda/bin"`
+    set PYTHON3_PATH = `find ~ -iregex ".*/anaconda3/bin"`
     echo $PYTHON3_PATH > $CONFIG_FILE
 else
     set PYTHON3_PATH = `cat $CONFIG_FILE`

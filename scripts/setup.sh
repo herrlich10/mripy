@@ -12,4 +12,4 @@ echo "# added by mripy installer" >> $CONFIG_FILE
 echo "export \"PATH=\$PATH:$SCRIPT_PATH\"" >> $CONFIG_FILE
 
 # Setup ipython for mac's default python 2.7
-source setup_ipython.sh
+# source setup_ipython.sh

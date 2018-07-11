@@ -1,7 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import re, glob, shlex, subprocess, sys, os, collections, tempfile, copy
+import sys, os, subprocess
+import re, glob, shlex, shutil, tempfile
+import collections, itertools, copy
+import random, string
 from os import path
 from datetime import datetime
 import numpy as np
@@ -11,7 +14,10 @@ try:
     import nibabel
 except ImportError:
     print('You may need to install "nibabel" to read/write NIFTI (*.nii) files.')
-
+try:
+    from lxml import etree
+except ImportError:
+    print('You may need to install "lxml" to read/write niml datasets (*.niml.dset).')
 
 # Timestamp
 def _timestamp(dt):
@@ -120,7 +126,8 @@ def parse_physio_file(fname, date=None):
     ----------
     [1] https://cfn.upenn.edu/aguirre/wiki/public:pulse-oximetry_during_fmri_scanning
     '''
-    fs = {'ecg': 398.4, 'ext': 199.20, 'puls': 49.80, 'resp': 49.80} # {'ecg': 400, 'ext': 200, 'puls': 50, 'resp': 50}
+    # fs = {'ecg': 400, 'ext': 200, 'puls': 50, 'resp': 50}
+    fs = {'ecg': 398.4, 'ext': 199.20, 'puls': 49.80, 'resp': 49.80}
     trig_value = 5000
     info = _parse_physio_raw(fname)
     if info is None:
@@ -131,6 +138,7 @@ def parse_physio_file(fname, date=None):
     info['stop'] = mmn2dt(info['LogStopMDHTime'], date, timestamp=True)
     x = info['rawdata']
     if ch != 'ecg':
+        # y = x.copy()
         y = x[x!=trig_value] # Strip trigger value (5000)
         trig = np.zeros_like(x)
         trig[np.nonzero(x==trig_value)[0]-1] = 1
@@ -141,6 +149,12 @@ def parse_physio_file(fname, date=None):
     info['data'] = y
     info['trig'] = trig
     info['t'] = info['start'] + np.arange(len(y)) / fs[ch]
+    try:
+        assert(np.abs(info['t'][-1]-info['stop'])<2/info['fs']) # Allow 1 sampleish error
+    except AssertionError as err:
+        print('{0}: Last sample = {1}, stop = {2}, error = {3}'.format(
+            info['channel'], info['t'][-1], info['stop'], info['t'][-1]-info['stop']))
+        raise err
     return info
 
 
@@ -159,18 +173,27 @@ def parse_physio_files(fname, date=None, channels=None):
     return info
 
 
-def match_physio_with_series(physio_infos, series_infos, channel=None):
+def match_physio_with_series(physio_infos, series_infos, channel=None, method='cover'):
     if channel is None:
         channel = 'resp'
     physio_t = np.array([[p[channel]['start'], p[channel]['stop']] if p is not None else [0, 0] for p in physio_infos])
     physio = []
     series = []
-    for s in series_infos:
-        p_idx = (physio_t[:,0] < s['start']) & (s['stop'] < physio_t[:,1])
-        if np.any(p_idx):
-            # If there is more than one (which should not be the case), use only the first one
-            physio.append(physio_infos[np.nonzero(p_idx)[0][0]])
-            series.append(s)
+    for k, s in enumerate(series_infos):
+        if method == 'cover':
+            p_idx = (physio_t[:,0] < s['start']) & (s['stop'] < physio_t[:,1])
+            if np.any(p_idx):
+                # If there is more than one (which should not be the case), use only the first one
+                physio.append(physio_infos[np.nonzero(p_idx)[0][0]])
+                series.append(s)
+        elif method == 'overlap':
+            p_idx = (physio_t[:,0] < s['stop']) & (s['start'] < physio_t[:,1]) # Thanks to Prof. Zhang Jun
+            if np.any(p_idx):
+                # If there is more than one (which should not be the case), use the one with largest overlap
+                overlap = np.maximum(physio_t[p_idx,0], s['start']) - np.minimum(physio_t[p_idx,1], s['stop'])
+                idx = np.nonzero(p_idx)[0][np.argmax(overlap)]
+                physio.append(physio_infos[idx])
+                series.append(s)
     return physio, series
 
 
@@ -213,111 +236,147 @@ def parse_dicom_header(fname, fields=None):
     header = collections.OrderedDict()
     lines = subprocess.check_output(['dicom_hdr', fname]).decode('utf-8').split('\n')
     k = 0
-    while True:
-        match = re.search(r'ID Acquisition Date//(\S+)', lines[k])
-        k += 1
-        if match:
-            header['AcquisitionDate'] = match.group(1)
-            break
-    while True:
-        match = re.search(r'ID Acquisition Time//(\S+)', lines[k])
-        k += 1
-        if match:
-            header['AcquisitionTime'] = match.group(1) # This marks the start of a volume
-            header['volume_time'] = hms2dt(header['AcquisitionTime'], date=header['AcquisitionDate'], timestamp=True)
-            break
-    while True:
-        match = re.search(r'ACQ Scanning Sequence//(.+)', lines[k])
-        k += 1
-        if match:
-            header['sequence_type'] = match.group(1).strip()
-            break
-    while True:
-        match = re.search(r'ACQ Sequence Variant//(.+)', lines[k])
-        k += 1
-        if match:
-            header['sequence_type'] = ' '.join((match.group(1).strip(), header['sequence_type']))
-            break
-    while True:
-        match = re.search(r'ACQ MR Acquisition Type //(.+)', lines[k])
-        k += 1
-        if match:
-            header['sequence_type'] = ' '.join((match.group(1).strip(), header['sequence_type']))
-            break
-    while True:
-        match = re.search(r'ACQ Slice Thickness//(\S+)', lines[k])
-        k += 1
-        if match:
-            header['resolution'] = [float(match.group(1))]
-            break
-    while True:
-        match = re.search(r'ACQ Repetition Time//(\S+)', lines[k])
-        k += 1
-        if match:
-            header['RepetitionTime'] = float(match.group(1))
-            break
-    while True:
-        match = re.search(r'ACQ Echo Time//(\S+)', lines[k])
-        k += 1
-        if match:
-            header['TE'] = float(match.group(1))
-            break
-    while True:
-        match = re.search(r'ACQ Protocol Name//(.+)', lines[k])
-        k += 1
-        if match:
-            header['ProtocolName'] = match.group(1).strip()
-            break
-    while True:
-        match = re.search(r'ACQ Flip Angle//(\S+)', lines[k])
-        k += 1
-        if match:
-            header['FlipAngle'] = float(match.group(1))
-            break
-    while True:
-        match = re.search(r'ACQ SAR//(\S+)', lines[k])
-        k += 1
-        if match:
-            header['SAR'] = float(match.group(1))
-            break
-    while True: # This field is optional
-        match = re.search(r'0019 100a.+//\s*(\d+)', lines[k])
-        k += 1
-        if match:
-            header['n_slices'] = int(match.group(1))
-            break
-        if lines[k].startswith('0020'):
-            break
-    while True:
-        match = re.search(r'REL Study ID//(\d+)', lines[k])
-        k += 1
-        if match:
-            header['StudyID'] = int(match.group(1)) # Study index
-            break
-    while True:
-        match = re.search(r'REL Series Number//(\d+)', lines[k])
-        k += 1
-        if match:
-            header['SeriesNumber'] = int(match.group(1)) # Series index
-            break
-    while True:
-        match = re.search(r'REL Acquisition Number//(\d+)', lines[k])
-        k += 1
-        if match:
-            header['AcquisitionNumber'] = int(match.group(1)) # Volume index
-            break
-    while True:
-        match = re.search(r'REL Instance Number//(\d+)', lines[k])
-        k += 1
-        if match:
-            header['InstanceNumber'] = int(match.group(1)) # File index (whether it is one volume or one slice per file)
-            break
-    while True:
-        match = re.search(r'IMG Pixel Spacing//(\S+)', lines[k])
-        k += 1
-        if match:
-            header['resolution'] = list(map(float, match.group(1).split('\\'))) + header['resolution']
-            break
+    try:
+        while True:
+            match = re.search(r'ID Acquisition Date//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['AcquisitionDate'] = match.group(1)
+                break
+        while True:
+            match = re.search(r'ID Acquisition Time//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['AcquisitionTime'] = match.group(1) # This marks the start of a volume
+                header['volume_time'] = hms2dt(header['AcquisitionTime'], date=header['AcquisitionDate'], timestamp=True)
+                break
+        while True:
+            match = re.search(r'ACQ Scanning Sequence//(.+)', lines[k])
+            k += 1
+            if match:
+                header['sequence_type'] = match.group(1).strip()
+                break
+        while True:
+            match = re.search(r'ACQ Sequence Variant//(.+)', lines[k])
+            k += 1
+            if match:
+                header['sequence_type'] = ' '.join((match.group(1).strip(), header['sequence_type']))
+                break
+        while True:
+            match = re.search(r'ACQ MR Acquisition Type //(.+)', lines[k])
+            k += 1
+            if match:
+                header['sequence_type'] = ' '.join((match.group(1).strip(), header['sequence_type']))
+                break
+        while True:
+            match = re.search(r'ACQ Slice Thickness//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['resolution'] = [float(match.group(1))]
+                break
+        while True:
+            match = re.search(r'ACQ Repetition Time//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['RepetitionTime'] = float(match.group(1)) # ms
+                break
+        while True:
+            match = re.search(r'ACQ Echo Time//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['TE'] = float(match.group(1)) # ms
+                break
+        while True:
+            match = re.search(r'ACQ Imaging Frequency//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['Larmor'] = float(match.group(1)) # MHz
+                break
+        while True:
+            match = re.search(r'ACQ Echo Number//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['EchoNumber'] = int(match.group(1)) # For multi-echo images
+                break
+        while True:
+            match = re.search(r'ACQ Magnetic Field Strength//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['B0'] = float(match.group(1)) # Tesla
+                break
+        while True:
+            match = re.search(r'ACQ Pixel Bandwidth//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['BW'] = float(match.group(1)) # Hz/pixel
+                break
+        while True:
+            match = re.search(r'ACQ Protocol Name//(.+)', lines[k])
+            k += 1
+            if match:
+                header['ProtocolName'] = match.group(1).strip()
+                break
+        while True:
+            match = re.search(r'ACQ Flip Angle//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['FlipAngle'] = float(match.group(1))
+                break
+        while True:
+            match = re.search(r'ACQ SAR//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['SAR'] = float(match.group(1))
+                break
+        while True: # This field is optional
+            match = re.search(r'0019 100a.+//\s*(\d+)', lines[k])
+            k += 1
+            if match:
+                header['n_slices'] = int(match.group(1))
+                break
+            if lines[k].startswith('0020'):
+                break
+        while True:
+            match = re.search(r'REL Study ID//(\d+)', lines[k])
+            k += 1
+            if match:
+                header['StudyID'] = int(match.group(1)) # Study index
+                break
+        while True:
+            match = re.search(r'REL Series Number//(\d+)', lines[k])
+            k += 1
+            if match:
+                header['SeriesNumber'] = int(match.group(1)) # Series index
+                break
+        while True:
+            match = re.search(r'REL Acquisition Number//(\d+)', lines[k])
+            k += 1
+            if match:
+                header['AcquisitionNumber'] = int(match.group(1)) # Volume index
+                break
+        while True:
+            match = re.search(r'REL Instance Number//(\d+)', lines[k])
+            k += 1
+            if match:
+                header['InstanceNumber'] = int(match.group(1)) # File index (whether it is one volume or one slice per file)
+                break
+        while True:
+            match = re.search(r'IMG Pixel Spacing//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['resolution'] = list(map(float, match.group(1).split('\\'))) + header['resolution']
+                break
+        while True: # This field is optional
+            match = re.search(r'0051 1011.+//(\S+)', lines[k])
+            k += 1
+            if match:
+                header['iPAT'] = match.group(1)
+                break
+            if lines[k].startswith('Group'):
+                break
+    except IndexError as error:
+        print('** Failed to process "{0}"'.format(fname))
+        raise error
     if fields is not None:
         for line in lines:
             for field, (matcher, extracter) in fields.items():
@@ -325,6 +384,7 @@ def parse_dicom_header(fname, fields=None):
                 if match:
                     header[field] = extracter(match)
                     break
+    header['gamma'] = 2*np.pi*header['Larmor']/header['B0']
     return header
 
 
@@ -432,7 +492,35 @@ def filter_dicom_files(files, series_numbers=None, instance_numbers=None, series
     return filtered
 
 
-def parse_series_info(fname, volume_time=False, series_pattern=SERIES_PATTERN, fields=None):
+def pares_slice_order(dicom_files):
+    t = None
+    if len(dicom_files) > 1:
+        temp_dir = 'temp_pares_slice_order'
+        os.makedirs(temp_dir)
+        for k, f in enumerate(dicom_files[:2]):
+            shutil.copyfile(f, path.join(temp_dir, '{0}.IMA'.format(k)))
+        old_path = os.getcwd()
+        try:
+            os.chdir(temp_dir)
+            afni.check_output('''Dimon -infile_pattern '*.IMA'
+                -gert_create_dataset -gert_to3d_prefix temp -gert_quit_on_err''')
+            res = afni.check_output(['3dAttribute', 'TAXIS_OFFSETS', 'temp+orig'])[-2]
+            t = np.array(list(map(float, res.split())))
+        finally:
+            os.chdir(old_path)
+            shutil.rmtree(temp_dir)
+    if t is None:
+        order = None
+    elif np.all(np.diff(t) > 0):
+        order = 'ascending'
+    elif np.all(np.diff(t) < 0):
+        order = 'descending'
+    else:
+        order = 'interleaved'
+    return order, t
+
+
+def parse_series_info(fname, volume_time=False, shift_time=None, series_pattern=SERIES_PATTERN, fields=None):
     if isinstance(fname, six.string_types): # A single file or a folder
         if path.isdir(fname):
             # Assume there is only one series in the folder, so that we only need to consider the first file.
@@ -460,17 +548,27 @@ def parse_series_info(fname, volume_time=False, series_pattern=SERIES_PATTERN, f
         selected = [k for k, header in enumerate(headers) if header['StudyID']==headers[findex]['StudyID']]
         files = [files[k] for k in selected]
         headers = [headers[k] for k in selected]
-    info['date'] = headers[0]['AcquisitionDate']
+    info.update(headers[0])
+    info['date'] = info['AcquisitionDate']
     info['first'] = headers[0]['volume_time']
     info['last'] = headers[-1]['volume_time']
     info['n_volumes'] = headers[-1]['AcquisitionNumber'] - headers[0]['AcquisitionNumber'] + 1
     info['TR'] = (info['last']-info['first'])/(info['n_volumes']-1) if info['n_volumes'] > 1 else None
+    if shift_time == 'CMRR':
+        shift_time = 0
+        if info['TR'] is not None and 'n_slices' in info and np.mod(info['n_slices'], 2)==0:
+            slice_order = pares_slice_order(files)[0]
+            if slice_order == 'interleaved':
+                shift_time = -info['TR']/2
+    elif shift_time is None:
+        shift_time = 0
+    info['first'] += shift_time
+    info['last'] += shift_time
     info['start'] = info['first']
-    info['stop'] = info['last'] + info['TR'] if info['TR'] is not None else info['last']
+    info['stop'] = (info['last'] + info['TR']) if info['TR'] is not None else info['last']
     if volume_time:
-        info['t'] = np.array([header['volume_time'] for header in headers])
+        info['t'] = np.array([header['volume_time'] for header in headers]) + shift_time
     info['files'] = [path.realpath(f) for f in files]
-    info.update(headers[0])
     info['headers'] = headers
     return info
 
@@ -503,7 +601,7 @@ def convert_dicom(folder, output_dir=None, prefix=None):
         os.chdir(old_path)
 
 
-def convert_dicoms(folder, output_dir=None):
+def convert_dicoms(folder, output_dir=None, prefix=None):
     '''
     Parameters
     ----------
@@ -515,9 +613,11 @@ def convert_dicoms(folder, output_dir=None):
         E.g., the output would look like
         output_dir/anat+orig, output_dir/func01+orig, etc.
     '''
+    idx = 0
     for f in glob.glob(path.join(folder, '*')):
         if path.isdir(f) and len(glob.glob(path.join(f, '*.IMA'))) > 0:
-            convert_dicom(f, output_dir)
+            idx += 1
+            convert_dicom(f, output_dir, prefix if prefix is None else '{0}{1:02d}'.format(prefix, idx))
 
 
 # Volume data
@@ -559,6 +659,157 @@ def write_afni(prefix, vol, base_img=None):
     os.remove(nii_fname)
 
 
+def read_txt(fname, dtype=float, comment='#', delimiter=None, skiprows=0, return_comments=False):
+    '''Read numerical array from text file, much faster than np.loadtxt()'''
+    with open(fname, 'r') as fin:
+        lines = fin.readlines()
+    if return_comments:
+        comments = [line for line in lines[skiprows:] if line.strip() and line.startswith(comment)]
+    lines = [line for line in lines[skiprows:] if line.strip() and not line.startswith(comment)]
+    n_cols = len(lines[0].split(delimiter))
+    x = np.fromiter(itertools.chain.from_iterable(
+        map(lambda line: line.split(delimiter), lines)), dtype=dtype).reshape(-1,n_cols)
+    if return_comments:
+        return x, comments
+    else:
+        return x
+
+
+def read_asc(fname):
+    '''Read FreeSurfer/SUMA surface (vertices and faces) in *.asc format.'''
+    with open(fname, 'r') as fin:
+        lines = fin.readlines()
+    n_verts, n_faces = np.int_(lines[1].split())
+    # verts = np.vstack(map(lambda line: np.float_(line.split()), lines[2:2+n_verts])) # As slow as np.loadtxt()
+    # verts = np.float_(''.join(lines[2:2+n_verts]).split()).reshape(-1,4) # Much faster
+    verts = np.fromiter(itertools.chain.from_iterable(
+        map(lambda line: line.split()[:3], lines[2:2+n_verts])), dtype=float).reshape(-1,3)
+    faces = np.fromiter(itertools.chain.from_iterable(
+        map(lambda line: line.split()[:3], lines[2+n_verts:2+n_verts+n_faces])), dtype=int).reshape(-1,3)
+    return verts, faces
+
+
+def write_asc(fname, verts, faces):
+    with open(fname, 'w') as fout:
+        fout.write('#!ascii version of surface mesh saved by mripy\n')
+        np.savetxt(fout, [[len(verts), len(faces)]], fmt='%d')
+        np.savetxt(fout, np.c_[verts, np.zeros(len(verts))], fmt=['%.6f', '%.6f', '%.6f', '%d'])
+        np.savetxt(fout, np.c_[faces, np.zeros(len(faces))], fmt='%d')    
+
+
+def read_label(fname):
+    '''Read FreeSurfer label'''
+    x = read_txt(fname)
+    nodes = np.int_(x[:,0])
+    coords = x[:,1:4]
+    labels = x[:,4]
+    return nodes, coords, labels
+
+
+NIML_DSET_CORE_TAGS = ['INDEX_LIST', 'SPARSE_DATA']
+
+def read_niml_dset(fname, tags=None, as_asc=True, return_type='list'):
+    if tags is None:
+        tags = NIML_DSET_CORE_TAGS
+    if as_asc:
+        temp_file = 'tmp.' + fname
+        if not path.exists(temp_file):
+            subprocess.check_call(['ConvertDset', '-o_niml_asc', '-input', fname, '-prefix', temp_file])
+        root = etree.parse(temp_file).getroot()
+        os.remove(temp_file)
+        def get_data(tag):
+            element = root.find(tag)
+            return np.fromiter(element.text.split(), dtype=element.get('ni_type'))
+        data = {tag: get_data(tag) for tag in tags}
+    if return_type == 'list':
+        return [data[tag] for tag in tags]
+    elif return_type == 'dict':
+        return data
+    elif return_type == 'tree':
+        return root
+
+
+def read_niml_bin_nodes(fname):
+    '''
+    Read "Node Bucket" (node indices and values) from niml (binary) dataset.
+    This implementation is experimental for one-column dset only.
+    '''
+    with open(fname, 'rb') as fin:
+        s = fin.read()
+        data = []
+        for tag in NIML_DSET_CORE_TAGS:
+            pattern = '<{0}(.*?)>(.*?)</{0}>'.format(tag)
+            match = re.search(bytes(pattern, encoding='utf-8'), s, re.DOTALL)
+            if match is not None:
+                # attrs = match.group(1).decode('utf-8').split()
+                # attrs = {k: v[1:-1] for k, v in (attr.split('=') for attr in attrs)}
+                attrs = shlex.split(match.group(1).decode('utf-8')) # Don't split quoted string
+                attrs = dict(attr.split('=') for attr in attrs)
+                x = np.frombuffer(match.group(2), dtype=attrs['ni_type']+'32')
+                data.append(x.reshape(np.int_(attrs['ni_dimen'])))
+            else:
+                data.append(None)
+        if data[0] is None: # Non-sparse dataset
+            data[0] = np.arange(data[1].shape[0])
+        return data[0], data[1]
+
+
+def write_niml_bin_nodes(fname, idx, val):
+    '''
+    Write "Node Bucket" (node indices and values) as niml (binary) dataset.
+    This implementation is experimental for one-column dset only.
+
+    References
+    ----------
+    [1] https://afni.nimh.nih.gov/afni/community/board/read.php?1,60396,60399#msg-60399
+    [2] After some trial-and-error, the following components are required:
+        self_idcode, COLMS_RANGE, COLMS_TYPE (tell suma how to interpret val), 
+        no whitespace between opening tag and binary data.
+    '''
+    with open(fname, 'wb') as fout:
+        # AFNI_dataset
+        fout.write('<AFNI_dataset dset_type="Node_Bucket" self_idcode="{0}" \
+            ni_form="ni_group">\n'.format(generate_afni_idcode()).encode('utf-8'))
+        # COLMS_RANGE
+        fout.write('<AFNI_atr ni_type="String" ni_dimen="1" atr_name="COLMS_RANGE">\
+            "{0} {1} {2} {3}"</AFNI_atr>\n'.format(np.min(val), np.max(val), 
+            idx[np.argmin(val)], idx[np.argmax(val)]).encode('utf-8'))
+        # COLMS_TYPE
+        col_types = {'int': 'Node_Index_Label', 'float': 'Generic_Float'}
+        fout.write('<AFNI_atr ni_type="String" ni_dimen="1" atr_name="COLMS_TYPE">\
+            "{0}"</AFNI_atr>\n'.format(col_types[get_ni_type(val)]).encode('utf-8'))
+        # INDEX_LIST
+        # Important: There should not be any \n after the opening tag for the binary data!
+        fout.write('<INDEX_LIST ni_form="binary.lsbfirst" ni_type="int" ni_dimen="{0}" \
+            data_type="Node_Bucket_node_indices">'.format(len(idx)).encode('utf-8'))
+        fout.write(idx.astype('int32').tobytes())
+        fout.write(b'</INDEX_LIST>\n')
+        # SPARSE_DATA
+        fout.write('<SPARSE_DATA ni_form="binary.lsbfirst" ni_type="{0}" ni_dimen="{1}" \
+            data_type="Node_Bucket_data">'.format(get_ni_type(val), len(val)).encode('utf-8'))
+        fout.write(val.astype(get_ni_type(val)+'32').tobytes())
+        fout.write(b'</SPARSE_DATA>\n')
+        fout.write(b'</AFNI_dataset>\n')
+
+
+def generate_afni_idcode():
+    return 'AFN_' + ''.join(random.choice(string.ascii_letters + string.digits) for n in range(22))
+
+
+def get_ni_type(x):
+    if np.issubdtype(x.dtype, np.integer):
+        return 'int'
+    elif np.issubdtype(x.dtype, np.floating):
+        return 'float'
+
+
+def write_1D_nodes(fname, idx, val):
+    if idx is None:
+        idx = np.arange(len(d))
+    formats = dict(int='%d', float='%.6f')
+    np.savetxt(fname, np.c_[idx, val], fmt=['%d', formats[get_ni_type(val)]])
+    
+
 class MaskDumper(object):
     def __init__(self, mask_file):
         self.mask_file = mask_file
@@ -590,24 +841,43 @@ class MaskDumper(object):
 class Mask(object):
     def __init__(self, master=None, kind='mask'):
         self.master = master
+        self.value = None
         if self.master is not None:
-            res = afni.check_output(['@GetAfniDims', self.master])[-2] # There can be leading warnings for oblique datasets
-            self.IJK = np.fromiter(map(int, res.split()), int)[:3]
-            # res = afni.check_output(['cat_matvec', self.master+'::IJK_TO_DICOM', '-ONELINE'])[-2] # IJK_TO_DICOM_REAL??
-            # self.MAT = np.fromiter(map(float, res.split()), float).reshape(3,4)
-            res = afni.check_output(['3dAttribute', 'ORIGIN', self.master])[-2]
-            ORIGIN = np.fromiter(map(float, res.split()), float)
-            res = afni.check_output(['3dAttribute', 'DELTA', self.master])[-2]
-            DELTA = np.fromiter(map(float, res.split()), float)
-            self.MAT = np.c_[np.diag(DELTA), ORIGIN][[0,2,1],:]
+            self._infer_geometry(self.master)
+            self.value = read_afni(self.master).ravel('F')
             if kind == 'mask':
-                idx = read_afni(master).ravel('F') > 0 # afni uses Fortran index here
+                idx = self.value > 0 # afni uses Fortran index here
+                self.value = self.value[idx]
                 self.index = np.arange(np.prod(self.IJK))[idx]
             elif kind == 'full':
                 self.index = np.arange(np.prod(self.IJK))
 
+    def _infer_geometry(self, fname):
+        self.IJK = afni.get_dims(fname)[:3]
+        # res = afni.check_output(['cat_matvec', self.master+'::IJK_TO_DICOM', '-ONELINE'])[-2] # IJK_TO_DICOM_REAL??
+        # self.MAT = np.fromiter(map(float, res.split()), float).reshape(3,4)
+        res = afni.check_output(['3dAttribute', 'ORIGIN', fname])[-2]
+        ORIGIN = np.fromiter(map(float, res.split()), float)
+        res = afni.check_output(['3dAttribute', 'DELTA', fname])[-2]
+        DELTA = np.fromiter(map(float, res.split()), float)
+        self.MAT = np.c_[np.diag(DELTA), ORIGIN][[0,2,1],:]
+
+    @classmethod
+    def from_expr(cls, expr=None, **kwargs):
+        master = list(kwargs.values())[0]
+        mask = cls(master=None)
+        mask.master = master
+        mask._infer_geometry(master)
+        data = {v: read_afni(f).squeeze() for v, f in kwargs.items()}
+        idx = eval(expr, data).ravel('F') > 0
+        mask.index = np.arange(np.prod(mask.IJK))[idx]
+        return mask
+
     def compatible(self, other):
         return np.all(self.IJK==other.IJK) and np.allclose(self.MAT, other.MAT)
+
+    def __repr__(self):
+        return 'Mask ({0} voxels)'.format(len(self.index))
 
     def __add__(self, other):
         '''Mask union. Both masks are assumed to share the same grid.'''

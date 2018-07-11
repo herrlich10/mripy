@@ -1,4 +1,4 @@
-#!/usr/bin/env ipython --
+#!/usr/bin/env ipython_wrapper
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
 import sys, os, argparse, glob
@@ -11,12 +11,13 @@ if __name__ == '__main__':
     timer = script_utils.ScriptTimer()
 
     parser = argparse.ArgumentParser(description='Align SurfVol to experiment anat.')
-    parser.add_argument('-b', '-base', '-e', '--exp_anat', required=True, help='experiment anat (base image)')
+    parser.add_argument('-b', '-base', '--exp_anat', required=True, help='experiment anat (base image)')
     parser.add_argument('-s', '-suma', '--suma', default='../SUMA', help='SUMA directory (default ../SUMA)')
-    parser.add_argument('-i', '-input', '-v', '--surf_vol', default=None, help='SurfVol (source image), default copy from SUMA')
-    parser.add_argument('-o', '-output', '-p', '-prefix', '--prefix', default=None, help='output prefix (default SurfVol_Alnd_Exp)')
+    parser.add_argument('-i', '-input', '--surf_vol', default=None, help='SurfVol (source image), default copy from SUMA')
+    parser.add_argument('-o', '-output', '-prefix', '--prefix', default=None, help='output prefix (default SurfVol_Alnd_Exp)')
     parser.add_argument('-r', '--refit_base', action='store_true', help='store S2E transform also in base image')
-    args = parser.parse_args()
+    args, unknownargs = parser.parse_known_args()
+    
     suma_path = path.expanduser(args.suma)
     suma_subj = afni.get_suma_subj(suma_path)
     if args.surf_vol is None:
@@ -24,8 +25,9 @@ if __name__ == '__main__':
     if args.prefix is None:
         args.prefix = 'SurfVol_Alnd_Exp'
 
-    !align_anat.ipy -b $args.exp_anat -i $args.surf_vol -o $args.prefix --suffix_1D .A2E.1D
-    if not path.exists(args.prefix + '+orig.HEAD'): # Check whether align_anat is successful
+    !mripy_align_anat.ipy -b $args.exp_anat -i $args.surf_vol -o $args.prefix --suffix_1D .A2E.1D \
+        {' '.join(unknownargs)}
+    if not path.exists(args.prefix + '+orig.HEAD'): # Check whether mripy_align_anat is successful
         sys.exit(1)
     # This is the traditional "forward" transform that maps old data to new space
     !cat_matvec {args.prefix+'.A2E.1D'} -I -ONELINE > {args.prefix+'.E2A.1D'}

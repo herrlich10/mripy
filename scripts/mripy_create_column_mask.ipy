@@ -1,0 +1,80 @@
+#!/usr/bin/env ipython_wrapper
+# -*- coding: utf-8 -*-
+from __future__ import print_function, division, absolute_import, unicode_literals
+import argparse, re
+from os import path
+
+
+if __name__ == '__main__':
+    import script_utils # Append mripy to Python path
+    from mripy import afni, utils
+    timer = script_utils.ScriptTimer()
+
+    parser = argparse.ArgumentParser(description='')
+    parser.add_argument('-i', '--input', required=True, help='')
+    parser.add_argument('-m', '--mask', help='')
+    # parser.add_argument('-b', '-base', '--base', required=True, help='grid parent')
+    parser.add_argument('-s', '--suma', default='../SUMA', help='SUMA directory (default ../SUMA)')
+    parser.add_argument('--spec', help='')
+    parser.add_argument('-v', '--surf_vol', default='SurfVol_Alnd_Exp+orig', help='SurfVol (default SurfVol_Alnd_Exp+orig)')
+    parser.add_argument('-c', '--combine', action='store_true', help='combine ROIs to get a single mask')
+    parser.add_argument('-o', '-prefix', '--prefix', default=None, help='output prefix (default as 1st ROI)')
+    args = parser.parse_args()
+    suma_dir = path.expanduser(args.suma)
+    suma_subj = afni.get_suma_subj(suma_dir)
+    if args.spec is None:
+        spec = {hemi: '{0}/{1}_{2}.spec'.format(suma_dir, suma_subj, hemi) for hemi in ['lh', 'rh', 'both']}
+    else:
+        spec_fmt = re.sub('both.spec', '{0}.spec', args.spec)
+        spec = {hemi: spec_fmt.format(hemi) for hemi in ['lh', 'rh', 'both']}
+    
+    hemis = ['lh', 'rh']
+    # pc = utils.ParallelCaller() # Execute 2 instances of 3dVol2Surf in parallel
+    # for hemi in hemis:
+    #     pc.check_call(['3dVol2Surf',
+    #         '-spec', spec[hemi],
+    #         '-surf_A', 'smoothwm',
+    #         '-surf_B', 'pial',
+    #         '-sv', args.surf_vol,
+    #         '-grid_parent', '{0}'.format(args.input),
+    #         '-cmask', '{0}'.format(args.mask),
+    #         '-map_func', 'median',
+    #         '-f_steps', '10',
+    #         '-f_index', 'nodes',
+    #         '-out_niml', 'tmp.{0}.{1}.niml.dset'.format(args.prefix, hemi), 
+    #         '-out_1D', 'tmp.{0}.{1}.1D.dset'.format(args.prefix, hemi)])
+    # pc.wait() # Wait for all 3dVol2Surf instances
+
+    mask_expr = ['step(a-1)', 'step(-1-a)']
+    # Mask surface dset
+    for hemi in hemis:
+        expr = '+'.join(('({0})*{1}'.format(ex, k+1) for k, ex in enumerate(mask_expr)))
+        !3dcalc -a tmp.{args.prefix}.{hemi}.niml.dset -expr '({expr})' \
+            -prefix tmp.mask.{args.prefix}.{hemi}.niml.dset -overwrite
+        !3dcalc -a tmp.{args.prefix}.{hemi}.niml.dset -expr '({expr})' \
+            -prefix tmp.mask.{args.prefix}.{hemi}.1D.dset -overwrite
+
+    # # Execute 2 instances of 3dSurf2Vol in parallel
+    # for hemi in hemis:
+    #     pc.check_call(['3dSurf2Vol',
+    #         '-spec', spec[hemi],
+    #         '-surf_A', 'smoothwm',
+    #         '-surf_B', 'pial',
+    #         '-sv', args.surf_vol,
+    #         '-grid_parent', '{0}'.format(args.input),
+    #         '-sdata', 'tmp.mask.{0}.{1}.niml.dset' .format(args.prefix, hemi),
+    #         '-map_func', 'mode',
+    #         '-f_steps', '10',
+    #         '-f_index', 'nodes',
+    #         '-prefix', 'tmp.{0}.{1}'.format(args.prefix, hemi), 
+    #         '-overwrite'])
+    # pc.wait() # Wait for all 3dSurf2Vol instances
+    
+    if args.combine:
+        print('>> Combine both hemispheres')
+        for suffix in ['mask', 'depth']:
+            !3dbucket -prefix -overwrite tmp.combine.{suffix} {' '.join(['%s%s.%s+orig' % (cb, roi, suffix) for roi in rois])}
+            !3dTstat -sum -prefix {args.prefix}.{suffix} -overwrite tmp.combine.{suffix}+orig
+
+    # # Remove temp files
+    # !rm tmp.*

@@ -1,0 +1,96 @@
+#!/usr/bin/env ipython_wrapper
+# -*- coding: utf-8 -*-
+from __future__ import print_function, division, absolute_import, unicode_literals
+from os import path
+import argparse, textwrap, multiprocessing as mp
+
+
+if __name__ == '__main__':
+    import script_utils # Append mripy to Python path
+    from mripy import afni, utils, io, surface
+    timer = script_utils.ScriptTimer()
+
+    parser = argparse.ArgumentParser(description='Convert FreeSurfer "curv" file to SUMA surface dset.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent('''
+        Notes
+        -----
+        Freesurfer uses what it internally calls the "curv" file format 
+        to store surface dataset (e.g. ?h.curv, ?h.thickness).
+        These are binary files and must be converted before accessible in SUMA.
+
+        Visual area code
+        ----------------
+        As coded in benson14_varea from 1 to 12:
+        V1, V2, V3, hV4,   VO1, VO2, LO1, LO2,   TO1, TO2, V3b, V3a
+
+        Examples
+        --------
+        1) Convert HCP retinotopy atlas, and interpolate into HD mesh
+        $ mripy_curv2dset.ipy -s fs_subjects/ZhangP -i benson14 \
+            --suma_dir S01/SUMA.hd -m hd.lh.inflated.asc
+        '''))
+    parser.add_argument('-s', '--subj_dir', required=True, help='')
+    parser.add_argument('-i', '--input', required=True, help='')
+    parser.add_argument('--suma_dir', help='')
+    parser.add_argument('-m', '--mesh', help='')
+    args = parser.parse_args()
+    convert_mgz = (args.input == 'benson14')
+    if args.input == 'benson14':
+        args.input = ['benson14_angle', 'benson14_eccen', 'benson14_sigma', 'benson14_varea']
+    surf_dir = path.join(args.subj_dir, 'surf')
+    mri_dir = path.join(args.subj_dir, 'mri')
+    suma_dir = args.suma_dir if args.suma_dir is not None else path.join(args.subj_dir, 'SUMA')
+    
+    hemis = ['lh', 'rh']
+    pc = utils.PooledCaller()
+    print('>> Converting dsets...')
+    for hemi in hemis:
+        for dset in args.input:
+            prefix = '{0}.{1}'.format(hemi, dset)
+            curv_file = path.join(surf_dir, prefix)
+            if not path.exists(curv_file):
+                print('>> "{0}" does not exist'.format(curv_file))
+                continue
+            gii_file = path.join(suma_dir, '{0}.gii'.format(prefix))
+            niml_file = path.join(suma_dir, '{0}.niml.dset'.format(prefix))
+            pc.check_call([
+                'mris_convert',
+                    '-c', curv_file,
+                    path.join(surf_dir, '{0}.white'.format(hemi)),
+                    gii_file, ';', 
+                'rm', niml_file, ';', 
+                'ConvertDset',
+                    '-input', gii_file,
+                    '-prefix', niml_file, '-o_niml_bi', ';', 
+                'rm', gii_file, ';',
+                ], shell=True)
+    pc.wait()
+
+    if convert_mgz:
+        print('>> Converting *.mgz files...')
+        surf_vol = path.join(suma_dir, afni.get_suma_subj(suma_dir) + '_SurfVol+orig')
+        for dset in args.input:
+            nii_file = path.join(suma_dir, dset+'.nii.gz')
+            # Convert and then shift: according to @SUMA_Make_Spec_FS
+            pc.check_call(f'''
+                mri_convert --in_type mgz --out_type nii \
+                    {path.join(mri_dir, dset+'.mgz')} {nii_file};
+                @Align_Centers -base {surf_vol} -dset {nii_file} -no_cp;
+                ''', shell=True)
+        pc.wait()
+
+    if args.mesh is not None:
+        mesh_fmt = afni.substitute_hemi(args.mesh)
+        fmesh = {}
+        for hemi in hemis:
+            print('>> Interpolating dsets for {0}...'.format(hemi))
+            verts, faces = io.read_asc(path.join(suma_dir, mesh_fmt.format(hemi)))
+            neighbors = surface.immediate_neighbors(verts, faces, return_array=True) # Data in shared memory 
+            fmesh[hemi] = (neighbors, verts.shape[0])
+            for dset in args.input:
+                prefix = '{0}.{1}'.format(hemi, dset)
+                niml_file = path.join(suma_dir, '{0}.niml.dset'.format(prefix))
+                out_file = path.join(suma_dir, 'hd.{0}.niml.dset'.format(prefix))
+                pc.check_call(surface.interp_dset, niml_file, fmesh[hemi], out_file)
+        pc.wait()

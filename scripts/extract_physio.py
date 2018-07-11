@@ -6,6 +6,37 @@ from os import path
 import numpy as np
 
 
+def plot_match(physio_infos, series_infos):
+    from matplotlib import pyplot as plt
+    from matplotlib import transforms
+
+    transHDVA = transforms.blended_transform_factory(plt.gca().transData, plt.gca().transAxes)
+    n_plots = 0
+    appended = False
+    for k, sinfo in enumerate(series_infos):
+        plt.axvspan(sinfo['start'], sinfo['stop'], n_plots*0.2, n_plots*0.2+0.2, color='k', alpha=0.3)
+        plt.text(sinfo['start'], n_plots*0.2+0.05, '%d'%k, transform=transHDVA, clip_on=True)
+        print('DICOM#{0:02d}: {1} ({2} volumes)'.format(k, path.basename(sinfo['files'][0]), sinfo['n_volumes']))
+        appended = True
+    if appended:
+        plt.text(0.01, n_plots*0.2+0.1, 'DICOM', transform=plt.gca().transAxes)
+        print('='*30)
+        n_plots += 1
+    for ch, color in zip(['resp', 'puls'], ['b', 'r']):
+        appended = False
+        for k, pinfo in enumerate(physio_infos):
+            if pinfo is not None and ch in pinfo:
+                plt.axvspan(pinfo[ch]['start'], pinfo[ch]['stop'], n_plots*0.2, n_plots*0.2+0.2, color=color, alpha=0.3)
+                plt.text(pinfo[ch]['start'], n_plots*0.2+0.05, '%d'%k, transform=transHDVA, clip_on=True)
+                print('{0}#{1:02d}: {2} ({3} samples)'.format(ch.upper(), k, path.basename(pinfo[ch]['file']), len(pinfo[ch]['data'])))
+                appended = True
+        if appended:
+            plt.text(0.01, n_plots*0.2+0.1, ch.upper(), transform=plt.gca().transAxes)
+            print('='*30)
+            n_plots += 1
+    plt.show()
+
+
 if __name__ == '__main__':
     import script_utils # Append mripy to Python path
     from mripy import io, utils, six
@@ -32,6 +63,9 @@ if __name__ == '__main__':
     parser.add_argument('-u', '--dummy', default=0, help='number of dummy scans (will trim physio accordingly)')
     parser.add_argument('-c', '--copy', nargs='?', const='default', metavar='path/to/copy/files/to', help='copy raw physio files to specified folder')
     parser.add_argument('-nbf', '--name_by_folder', action='store_true', help='name output by dicom folder names')
+    parser.add_argument('-g', '--graph', action='store_true', help='plot match between physio and dicom')
+    parser.add_argument('-m', '--match', default='cover', help='matching method: (cover)|overlap')
+    parser.add_argument('-M', '--CMRR', action='store_true', help='CMRR MB acquisition time correction')
     args = parser.parse_args()
     if args.output_dir == 'default':
         args.output_dir = path.join(args.physio, 'physio')
@@ -51,7 +85,7 @@ if __name__ == '__main__':
     dicom_files = []
     for dicom_dir in args.dicom:
         dicom_files.extend(io.filter_dicom_files(dicom_dir, series_numbers=args.func, instance_numbers=[1]))
-    series_infos = [io.parse_series_info(f) for f in dicom_files]
+    series_infos = [io.parse_series_info(f, shift_time='CMRR' if args.CMRR else None) for f in dicom_files]
     print(' ({0} files)'.format(len(series_infos)))
     if len(series_infos) == 0:
         print('No dicom file found in {0}. Use -d to specify one or more dicom input dir(s).'
@@ -67,8 +101,13 @@ if __name__ == '__main__':
         print('No physiological file found in "{0}". Use -p to specify physiological input dir.'
             .format(path.realpath(args.physio)))
         exit()
-    # Match physiological with dicom
-    physio_infos, series_infos = io.match_physio_with_series(physio_infos, series_infos)
+    # Match physiological with
+    if args.graph:
+        plot_match(physio_infos, series_infos)
+        # from mypy import mypy
+        # mypy.saveObjectAsPickle(dict(physio_infos=physio_infos, series_infos=series_infos), 'debug.pickle')
+    physio_infos, series_infos = io.match_physio_with_series(physio_infos, series_infos,
+        channel=args.channels[0], method=args.match)
     print('{0} pairs were found.'.format(len(physio_infos)))
     # List timing
     if args.list:

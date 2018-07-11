@@ -1,0 +1,159 @@
+#!/usr/bin/env ipython_wrapper
+# -*- coding: utf-8 -*-
+# Notes
+# -----
+# 1. Using align_epi_anat.py instead of 3dAllineate (--method align_epi_anat) 
+#    sometimes helps.
+# 2. Swapping base and source (--inverse) often helps, presumably because it
+#    changes the automatically generated mask.
+# 3. 6 params (--n_params 6) or unifize (--unifize) is not obviously useful.
+
+from __future__ import print_function, division, absolute_import, unicode_literals
+import sys, os, argparse, glob
+from os import path    
+
+
+if __name__ == '__main__':
+    import script_utils # Append mripy to Python path
+    from mripy import afni, evaluation, utils
+    timer = script_utils.ScriptTimer()
+    
+    def get_ns_filename(fname):
+        return afni.get_prefix(fname) + '_ns+orig.HEAD'
+
+    parser = argparse.ArgumentParser(description='Align T1 (source) to T1 (base), and optionally apply to other images.')
+    parser.add_argument('-b', '-base', '--base', required=True, help='base image')
+    parser.add_argument('-i', '-input', '-source', '--source', required=True, help='source image')
+    parser.add_argument('-o', '-output', '-prefix', '--prefix', default=None, help='output prefix (default source+suffix)')
+    parser.add_argument('--suffix', default='_al', help='output suffix')
+    parser.add_argument('--suffix_1D', default='_mat.aff12.1D', help='transform matrix suffix')
+    parser.add_argument('-f', '-other', '--other', default=[], nargs='+', help='other images that go with source')
+    parser.add_argument('-k', '--keep_tmp', action='store_true', help='keep tmp files')
+    parser.add_argument('--reuse_ns', action='store_true', help='reuse exist skullstrip file (with _ns suffix)')
+    parser.add_argument('-z', '--lazy', action='store_true', help='be lazy and reuse exist transform without quality check')
+    parser.add_argument('-c', '--cost', default='within', help='cost function (within=lpa|cross=lpc)')
+    parser.add_argument('-m', '--method', default='3dAllineate', help='main work horse (3dAllineate|align_epi_anat)')
+    parser.add_argument('-n', '--n_params', default='affine', help='number of parameters (affine=12|rigid=6)')
+    parser.add_argument('--skip_check', action='store_true', help='skip alignment check after transform estimation')
+    parser.add_argument('--skip_strip', action='store_true', help='skip skullstrip step')
+    parser.add_argument('--unifize', default=[], nargs='+', help='unifize image intensity')
+    parser.add_argument('-I', '--inverse', action='store_true', help='estimate in the opposite direction, and apply the inverse transform')
+    args = parser.parse_args()
+    print(args)
+
+    # Given the chance that upstream folder names may contain space which afni
+    # may not be able to handle even with quotes (e.g., 3dinfo "foo bar+orig"),
+    # it is better to simply assume/require processing in current directory
+    if args.prefix is None:
+        args.prefix = afni.get_prefix(args.source, with_path=True) + args.suffix
+    prefix_1D = args.prefix + args.suffix_1D
+    if args.cost == 'within':
+        args.cost = 'lpa'
+    elif args.cost == 'cross':
+        args.cost = 'lpc'
+    args.method = args.method.lower()
+    assert(args.method in ['3dallineate', 'align_epi_anat'])
+    if args.n_params in ['affine', '12']:
+        warp_cmd = 'affine_general'
+    elif args.n_params in ['rigid', '6']: 
+        warp_cmd = 'shift_rotate'
+
+    output = args.prefix + '+orig.HEAD'
+    prev_success = (path.exists(output) and afni.check_output(
+        '3dAttribute ALIGN_ANAT_IPY {0}'.format(output))[0][:-1] == 'success')
+    lazy_mode = (args.lazy and path.exists(prefix_1D) and prev_success)
+    if not lazy_mode:
+        base_file = args.base
+        source_file = args.source
+        if args.inverse:
+            base_file, source_file = source_file, base_file
+
+        # Skull-strip both base and source images if necessary
+        if not args.skip_strip:
+            if not path.exists('tmp.base_ns+orig.HEAD'):
+                old_base_ns = get_ns_filename(base_file)
+                if args.reuse_ns and path.exists(old_base_ns):
+                    print('>> Reuse: {0}'.format(old_base_ns))
+                    !3dcopy $old_base_ns tmp.base_ns
+                else:
+                    print('>> 3dSkullStrip: {0}'.format(base_file))
+                    !3dSkullStrip -orig_vol -prefix tmp.base_ns -overwrite -input {base_file}
+            else:
+                print('>> Reuse: tmp.base_ns+orig')
+            if not path.exists('tmp.source_ns+orig.HEAD'):
+                old_source_ns = get_ns_filename(source_file)
+                if args.reuse_ns and path.exists(old_source_ns):
+                    print('>> Reuse: {0}'.format(old_source_ns))
+                    !3dcopy $old_source_ns tmp.source_ns
+                else:
+                    print('>> 3dSkullStrip: {0}'.format(source_file))
+                    !3dSkullStrip -orig_vol -prefix tmp.source_ns -overwrite -input {source_file}
+            else:
+                print('>> Reuse: tmp.source_ns+orig')
+            base_file = 'tmp.base_ns+orig'
+            source_file = 'tmp.source_ns+orig'
+
+        # Unifize image intensity if necessary
+        if 'base' in args.unifize:
+            fi = base_file
+            base_file = 'tmp.base_uni+orig.HEAD'
+            if not utils.exists(base_file):
+                !3dUnifize -GM -Urad 25 -prefix {base_file} -overwrite -input {fi}
+        if 'source' in args.unifize:
+            fi = source_file
+            source_file = 'tmp.source_uni+orig.HEAD'
+            if not utils.exists(source_file):
+                !3dUnifize -GM -Urad 25 -prefix {source_file} -overwrite -input {fi}
+                
+        # Align the stripped
+        if args.method == '3dallineate':
+            !3dAllineate -cost {args.cost} -check hel -allcost -maxrot 90 -warp {warp_cmd} \
+                -autoweight -source_automask+2 -twobest 11 -fineblur 1 -cmass \
+                -base {base_file} -input {source_file} \
+                -1Dmatrix_save {prefix_1D} \
+                -prefix tmp.source_ns_al -overwrite
+        elif args.method == 'align_epi_anat':
+            # -maxrot in Allineate_opts goes before -giant_move, and is used by 3dAllineate
+            # default: -weight_frac 1.0 -maxrot 6 -maxshf 10 -VERB -warp aff -source_automask+4
+            !align_epi_anat.py -cost {args.cost} -giant_move \
+                -dset1to2 -dset1 {source_file} -dset2 {base_file} \
+                -dset1_strip None -dset2_strip None \
+                -Allineate_opts '-weight_frac 1.0 -maxrot 90 -VERB -warp {warp_cmd} -source_automask+4 ' \
+                -suffix _al -overwrite
+            !mv tmp.source_ns_al_mat.aff12.1D {prefix_1D}
+        if args.inverse:
+            prefix_inv = args.prefix + '_inv' + args.suffix_1D
+            !mv {prefix_1D} {prefix_inv}
+            !cat_matvec {prefix_inv} -I -ONELINE > {prefix_1D}
+
+        # Check alignment quality, and quit processing if failed.
+        if not args.skip_check:
+            costs = evaluation.afni_costs('tmp.base_ns+orig', 'tmp.source_ns_al+orig')
+            if costs['lpa'] > 0:
+                print('** ERROR: Alignment failed!')
+                sys.exit(1)
+
+        # Apply the transform to original source, and resample according to base.
+        # The generation of output file implies alignment success.
+        !3dAllineate -final wsinc5 \
+            -base $args.base -input $args.source \
+            -1Dmatrix_apply $prefix_1D \
+            -prefix $args.prefix -overwrite
+        # Explicitly store quality check result in dataset *.HEAD
+        !3drefit -atrstring ALIGN_ANAT_IPY 'success' $args.prefix+orig
+    else:
+        print('>> Running in lazy mode!')
+
+    # Transform other images that aligned with source
+    # Resample using their own grid (don't resample EPI to artifical high-res)
+    for f in args.other:
+        print('>> Transform: {0}'.format(f))
+        prefix_f = afni.get_prefix(f, with_path=True) + args.suffix
+        !3dAllineate -final wsinc5 -newgrid `3dinfo -di $f` \
+            -base $args.base -input $f \
+            -1Dmatrix_apply $prefix_1D \
+            -prefix $prefix_f -overwrite
+
+    # Remove temp files
+    if not args.keep_tmp:
+        !rm tmp.*

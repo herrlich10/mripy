@@ -1,4 +1,4 @@
-#!/usr/bin/env ipython --
+#!/usr/bin/env ipython_wrapper
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
 import sys, os, argparse, glob, re
@@ -19,8 +19,8 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--combine', action='store_true', help='combine ROIs to get a single mask')
     parser.add_argument('-o', '-output', '-prefix', '--prefix', default=None, help='output prefix (default as 1st ROI)')
     args = parser.parse_args()
-    suma_path = path.expanduser(args.suma)
-    suma_subj = afni.get_suma_subj(suma_path)
+    suma_dir = path.expanduser(args.suma)
+    suma_subj = afni.get_suma_subj(suma_dir)
     rois = [path.basename(roi)[:-9] for roi in args.roi] # Remove extension *.niml.roi
     hemis = [re.search(r'\b([lr]h)\b', roi).group(1) for roi in rois] # Hint for lh/rh in fname
     if args.prefix is None:
@@ -37,7 +37,7 @@ if __name__ == '__main__':
     print('>> Creating depth-independent masks...')
     for k, roi in enumerate(rois):
         !3dSurf2Vol \
-            -spec $suma_path/{suma_subj}_{hemis[k]}.spec \
+            -spec $suma_dir/{suma_subj}_{hemis[k]}.spec \
             -surf_A smoothwm \
             -surf_B pial \
             -sv $args.surf_vol \
@@ -60,7 +60,7 @@ if __name__ == '__main__':
             for surface in ['smoothwm', 'pial']:
                 print('>> Computing tmp.{0}.{1}.{2}.d+orig'.format(prefix, hemi, surface))
                 pc.check_call(['3dSurfMask', \
-                    '-spec', '{0}/{1}_{2}.spec'.format(suma_path, suma_subj, hemi),
+                    '-spec', '{0}/{1}_{2}.spec'.format(suma_dir, suma_subj, hemi),
                     '-surf', surface,
                     '-sv', args.surf_vol,
                     '-grid_parent', args.base,

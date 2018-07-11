@@ -4,8 +4,9 @@ from __future__ import print_function, division, absolute_import, unicode_litera
 import sys, os, re, shlex, shutil, glob, subprocess, collections
 from os import path
 from datetime import datetime
+import numpy as np
 import matplotlib as mpl
-from . import six, plots
+from . import six
 
 
 # Test afni installation
@@ -79,22 +80,126 @@ def get_prefix(fname, with_path=False):
     '''
     Return "dset" given "path/to/dset+orig.HEAD", "dset+orig.", "dset+tlrc", "dsets"
     '''
-    fstem = path.splitext(path.basename(fname))[0]
-    prefix = fstem[:-5] if len(fstem) > 5 and fstem[-5:] in ['+orig', '+tlrc'] else fstem
-    if with_path:
-        prefix = path.join(path.dirname(fname), prefix)
+    if path.splitext(fname)[1] in ['.niml', '.1D', '.dset']: # For surface dset
+        match = re.match(r'(.+)\.(?:niml|1D)(?:\.dset)?', fname)
+        prefix = match.group(1)
+    else: # For 3d dset
+        # fstem = path.splitext(path.basename(fname))[0]
+        if fname[-5:].upper() in ['.HEAD', '.BRIK']:
+            fstem = fname[:-5]
+        elif fname.endswith('.'):
+            fstem = fname[:-1]
+        else:
+            fstem = fname
+        prefix = fstem[:-5] if len(fstem) > 5 and fstem[-5:] in ['+orig', '+tlrc'] else fstem
+    if not with_path:
+        prefix = path.basename(prefix)
     return prefix
 
 
-def get_suma_subj(suma_path):
+def get_suma_subj(suma_dir):
     '''Infer SUMA subject given path to SUMA folder'''
     try:
-        # spec_file = glob.glob(path.join(suma_path, 'std.60.*_both.spec'))[0]
+        # spec_file = glob.glob(path.join(suma_dir, 'std.60.*_both.spec'))[0]
         # return path.basename(spec_file)[7:-10]
-        surf_vol = glob.glob(path.join(suma_path, '*_SurfVol+orig.HEAD'))[0]
+        surf_vol = glob.glob(path.join(suma_dir, '*_SurfVol+orig.HEAD'))[0]
         return path.basename(surf_vol)[:-18]
     except IndexError:
         return None
+
+
+HEMI_PATTERN = r'(?<=[^a-zA-Z0-9])(?:lh|rh|both)(?=[^a-zA-Z0-9])|^(?:lh|rh|both)(?=[^a-zA-Z0-9])'
+SPEC_HEMIS = ['lh', 'rh', 'both']
+
+def substitute_hemi(s, hemi='{0}'):
+    return re.sub(HEMI_PATTERN, hemi, s)
+
+
+def get_suma_spec(suma_spec):
+    '''Infer other spec files from one spec file (either lh.spec, rh.spec, or both.spec).'''
+    spec_fmt = re.sub('[a-z]+.spec', '{0}.spec', suma_spec)
+    return {hemi: spec_fmt.format(hemi) for hemi in SPEC_HEMIS}
+
+
+def get_suma_info(suma_dir, suma_spec=None):
+    info = {}
+    info['subject'] = get_suma_subj(suma_dir)
+    if suma_spec is None: # Infer spec files from suma_dir
+        info['spec'] = {hemi: '{0}/{1}_{2}.spec'.format(suma_dir, info['subject'], hemi) for hemi in SPEC_HEMIS}
+    else: # Infer other spec files from one spec file
+        info['spec'] = get_suma_spec(suma_spec)
+    return info
+
+
+def get_dims(fname):
+    '''
+    Dimensions (number of voxels) of the data matrix.
+    See also: get_head_dims
+    '''
+    res = check_output(['@GetAfniDims', fname])[-2] # There can be leading warnings for oblique datasets
+    return np.int_(res.split()) # np.fromiter(map(int, res.split()), int)
+
+
+def get_head_dims(fname):
+    '''
+    Dimensions (number of voxels) along R-L, A-P, I-S axes.
+    See also: get_dims
+    '''
+    res = check_output(['3dinfo', '-orient', '-n4', fname])[-2]
+    res = res.split()
+    orient = res[0]
+    dims = np.int_(res[1:])
+    ori2ax = {'R': 0, 'L': 0, 'A': 1, 'P': 1, 'I': 2, 'S': 2}
+    axes = [ori2ax[ori] for ori in orient]
+    return np.r_[dims[np.argsort(axes)], dims[3]]
+
+
+def get_head_delta(fname):
+    '''
+    Resolution (voxel size) along R-L, A-P, I-S axes.
+    '''
+    res = check_output(['3dinfo', '-orient', '-d3', fname])[-2]
+    res = res.split()
+    orient = res[0]
+    delta = np.abs(np.float_(res[1:]))
+    ori2ax = {'R': 0, 'L': 0, 'A': 1, 'P': 1, 'I': 2, 'S': 2}
+    axes = [ori2ax[ori] for ori in orient]
+    return delta[np.argsort(axes)]
+
+
+def get_head_extents(fname):
+    '''
+    Spatial extent along R, L, A, P, I and S.
+    '''
+    res = check_output(['3dinfo', '-extent', fname])[-2]
+    return np.float_(res.split())
+
+
+def get_brick_labels(fname, label2index=False):
+    res = check_output(['3dAttribute', 'BRICK_LABS', fname])[-2]
+    labels = res.split('~')
+    if label2index:
+        return {label: k for k, label in enumerate(labels)}
+    else:
+        return labels
+
+
+def get_S2E_mat(fname, mat='S2E'):
+    mat = {'S2E': 'S2B', 'S2B': 'S2B', 'E2S': 'B2S', 'B2S': 'B2S'}[mat]
+    res = check_output("cat_matvec -ONELINE '{0}::ALLINEATE_MATVEC_{1}_000000'".format(fname, mat))[-2]
+    return np.float_(res.split()).reshape(3,4)
+
+
+def generate_spec(spec_file, surfs, **kwargs):
+    kwargs = dict(dict(type='FS', state=None), **kwargs)
+    surfs = [dict(kwargs, **({'name': surf} if isinstance(surf, six.string_types) else surf)) for surf in surfs]
+    for surf in surfs:
+        if surf['state'] is None:
+            surf['state'] = re.search(r'[l|r]h\.(.+)\.asc', surf['name']).group(1)
+    cmds = []
+    for surf in surfs:
+         cmds.extend(['-tsn', surf['type'], surf['state'], surf['name']])
+    subprocess.check_call(['quickspec', '-spec', spec_file, '-overwrite'] + cmds)
 
 
 def update_afnirc(**kwargs):
@@ -271,3 +376,7 @@ def patch_afni_proc(original, patch, inplace=True):
         fname = original
     with open(fname, 'w') as fout:
         fout.write('\n'.join(patched))
+
+
+if __name__ == '__main__':
+    pass

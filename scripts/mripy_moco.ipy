@@ -1,0 +1,281 @@
+#!/usr/bin/env ipython_wrapper
+# -*- coding: utf-8 -*-
+from __future__ import print_function, division, absolute_import, unicode_literals
+import sys, os, argparse, glob, re, uuid
+from os import path
+import numpy as np
+
+
+def parse_crop_cmd(arg, arg_name, cmd_type='crop'):
+    if cmd_type == 'crop':
+        if len(arg) % 3 != 0:
+            raise ValueError('>> The number of items after {0} can only be 3, 6, or 9.'.format(arg_name))
+        crop_cmd = ''
+        for k in range(len(arg)//3):
+            crop_cmd += '-{0} {1} {2} '.format(arg[3*k], arg[3*k+1], arg[3*k+2])
+        return crop_cmd
+    elif cmd_type == 'mask':
+        if len(arg) % 3 != 0:
+            raise ValueError('>> The number of items after {0} can only be 1, 3, 6, or 9.'.format(arg_name))
+        calc_expr = []
+        for k in range(len(arg)//3):
+            lim = sorted(np.float_([arg[3*k+1], arg[3*k+2]]))
+            calc_expr.append('step({0}{1:+.4f})*step({2:.4f}-{0})'.format(arg[3*k], -lim[0], lim[1]))
+        calc_expr = '*'.join(calc_expr)
+        return calc_expr
+
+
+if __name__ == '__main__':
+    import script_utils # Append mripy to Python path
+    from mripy import afni, utils
+    timer = script_utils.ScriptTimer()
+    tmp_uuid = 'tmp_' + uuid.uuid4().hex[:4] + '.'
+
+    parser = argparse.ArgumentParser(description='Motion correction for functional runs.')
+    parser.add_argument('-n', '--name_pattern', nargs='+', default=['{run}.{suffix}+orig.HEAD'],
+        help='default name pattern is {run}.{suffix}+orig.HEAD, while {run}.{tag}.{suffix}+orig.HEAD is also useful')
+    parser.add_argument('-i', '--input', nargs='+', required=True, help='')
+    parser.add_argument('-o', '--output', help='')
+    parser.add_argument('-b', '--base', nargs='+', default=['index', '0', '0'], help='{-b base_dset+orig | -b index 0 0}')
+    parser.add_argument('-s', '--source', nargs='+', help='')
+    parser.add_argument('-p', '--preprocess', nargs='*', default=['med', 'blur'], help='preprocessing steps in that order, default -p med blur')
+    parser.add_argument('-c', '--crop', nargs='+', help='-c x -12.5 20 z -10 -5')
+    parser.add_argument('-m', '--mask', nargs='+', help='{-m mask_dset+orig | -m x -12.5 20 z -10 -5}')
+    parser.add_argument('-w', '--weight', nargs='+', help='weight (0~1) dset. The border must taper to zero.')
+    parser.add_argument('-v', '--visualize', nargs='+', help='-v x -12.5 20 z -10 -5')
+    parser.add_argument('-a', '--algorithm', nargs='+', default=['volreg'], help='{volreg | 3params | 3params x z}')
+    parser.add_argument('-x', '--transform', nargs='+', action='append', default=[['volreg']], help='')
+    parser.add_argument('--cost', help='cost function')
+    parser.add_argument('--apply', help='apply exist transforms without estimation')
+    parser.add_argument('--jobs', type=int, help='number of parallel jobs')
+    parser.add_argument('--dry', action='store_true', help='')
+    parser.add_argument('--keep_temp', action='store_true', help='keep intermediate results')
+    args = parser.parse_args()
+    print(args)
+
+    fm = utils.FilenameManager(args.name_pattern[0])
+    fm.parse(args.input)
+    old_tag = fm.kws['tag'] if 'tag' in fm.kws else None
+    n_files = len(args.input)
+    match = re.match('(\D+)\d+', fm.kws['run'][0])
+    kws = {'suffix': 'volreg', 'func': match.group(1) if match else 'func'}
+    k = 1
+    while k < len(args.name_pattern):
+        kws[args.name_pattern[k]] = args.name_pattern[k+1]
+        k += 2
+    fm.kws.update(kws)
+    if args.output is None:
+        args.output = fm.format(keepdims=True)
+    else:
+        args.output = fm.format(args.output, keepdims=True)
+    if args.source is None:
+        args.source = args.input
+    if 'tag' in fm.kws:
+        # Temp files are also tagged , so that multiple instances can run in the same folder
+        tmp_files = fm.format(tmp_uuid+'vr.{run}.{tag}+orig.HEAD', keepdims=True)
+        est_input = fm.format(tmp_uuid+'est.{run}.{tag}+orig.HEAD', keepdims=True)
+        d_files = fm.format('dfile.{run}.{tag}.1D', keepdims=True)
+        mat_files = fm.format('mat.vr.{run}.{tag}.aff12.1D', keepdims=True)
+        warp_files = fm.format('mat.warp.{run}.{tag}.aff12.1D', keepdims=True)
+        template_file = fm.format('template.vr.{tag}+orig.HEAD')
+        master_file = fm.format(tmp_uuid+'master.{tag}+orig.HEAD')
+        mask_file = fm.format(tmp_uuid+'mask.{tag}+orig.HEAD')
+        weight_file = fm.format('weight.vr.{tag}+orig.HEAD')
+        all_file = fm.format('all_{func}.{tag}+orig.HEAD')
+        mean_file = fm.format('mean_{func}.{tag}+orig.HEAD')
+        est_file = fm.format('est_{func}.{tag}+orig.HEAD')
+        vis_file = fm.format('vis_{func}.{tag}+orig.HEAD')
+    else:
+        tmp_files = fm.format(tmp_uuid+'vr.{run}+orig.HEAD', keepdims=True)
+        est_input = fm.format(tmp_uuid+'est.{run}+orig.HEAD', keepdims=True)
+        d_files = fm.format('dfile.{run}.1D', keepdims=True)
+        mat_files = fm.format('mat.vr.{run}.aff12.1D', keepdims=True)
+        warp_files = fm.format('mat.warp.{run}.aff12.1D', keepdims=True)
+        template_file = fm.format('template.vr+orig.HEAD')
+        master_file = fm.format(tmp_uuid+'master+orig.HEAD')
+        mask_file = fm.format(tmp_uuid+'mask+orig.HEAD')
+        weight_file = fm.format('weight.vr+orig.HEAD')
+        all_file = fm.format('all_{func}+orig.HEAD')
+        mean_file = fm.format('mean_{func}+orig.HEAD')
+        est_file = fm.format('est_{func}+orig.HEAD')
+        vis_file = fm.format('vis_{func}+orig.HEAD')
+    if old_tag is not None:
+        novr_file = fm.format('novr_{func}.{old_tag}+orig.HEAD', old_tag=old_tag)
+    else:
+        novr_file = fm.format('novr_{func}+orig.HEAD')
+    if args.weight is not None and len(args.weight) == 1:
+        args.weight = ['raw', args.weight]
+    if args.cost is None:
+        if args.algorithm[0] == 'volreg':
+            args.cost = 'ls'
+        else:
+            args.cost = 'lpa'
+    for k, xform in enumerate(args.transform): # Which is a list of lists
+        # Unify list representation
+        if len(xform) == 1:
+            if xform[0] in ['volreg', 'vr', 'moco']:
+                args.transform[k] = mat_files
+            else:
+                args.transform[k] = [xform[0]] * n_files
+    vis_cmd = None
+    if args.visualize is not None:
+        vis_cmd = parse_crop_cmd(args.visualize, '-v', cmd_type='crop')
+    if args.jobs is None:
+        args.jobs = 1
+    pc = utils.PooledCaller(args.jobs)
+    # print(args)
+    print(args.input, args.output, tmp_files)
+
+    if args.dry:
+        for k in range(n_files):
+            print('{0} -> {1}'.format(args.input[k], args.output[k]))
+    else:
+        if not args.apply:
+            # Prepare intermediate data for motion parameter estimation
+            prep_input = args.source
+            if 'med' in args.preprocess:
+                for k in range(n_files):
+                    # 3-point temporal median filter
+                    # !3dTsmooth -med -prefix {est_input[k]} -overwrite {prep_input[k]}
+                    pc.check_call("3dTsmooth -med -prefix {0} -overwrite {1}".format(est_input[k], prep_input[k]))
+                pc.wait()
+                prep_input = est_input
+            if 'blur' in args.preprocess:
+                for k in range(n_files):
+                    # 1mm FWHM spatial gaussian filter
+                    # !3dmerge -1blur_fwhm 1 -doall -prefix {est_input[k]} -overwrite {prep_input[k]}
+                    pc.check_call("3dmerge -1blur_fwhm 1 -doall -prefix {0} -overwrite {1}".format(est_input[k], prep_input[k]))
+                pc.wait()
+                prep_input = est_input
+            if args.mask is not None:
+                if len(args.mask) == 1:
+                    mask_file = args.mask[0]
+                else: # Specify x/y/z boundaries as with crop
+                    calc_expr = parse_crop_cmd(args.mask, '-m', cmd_type='mask')
+                    vis_cmd = parse_crop_cmd(args.mask, '-m', cmd_type='crop')
+                    !3dcalc -a {prep_input[0]}'[0]' -RAI -expr '{calc_expr}' -prefix {mask_file} -overwrite
+                for k in range(n_files):
+                    # !3dcalc -a {prep_input[k]} -m {mask_file} -expr 'a*m' \
+                    #     -prefix {est_input[k]} -overwrite
+                    pc.check_call("3dcalc -a {0} -m {1} -expr 'a*m' \
+                        -prefix {2} -overwrite".format(prep_input[k], mask_file, est_input[k]))
+                pc.wait()
+                prep_input = est_input
+            if args.crop is not None:
+                crop_cmd = parse_crop_cmd(args.crop, '-c', cmd_type='crop')
+                vis_cmd = crop_cmd
+                for k in range(n_files):
+                    !mripy_4dslice.ipy {crop_cmd} -i {prep_input[k]} -o {est_input[k]}
+                prep_input = est_input
+            est_input = prep_input
+
+            # Choose template
+            if len(args.base) == 1:
+                !3dTcat -prefix {template_file} -overwrite \
+                    {args.base[0]}
+            elif args.base[0] == 'index':
+                run_idx = int(args.base[1])
+                vol_idx = int(args.base[2])
+                !3dTcat -prefix {template_file} -overwrite \
+                    {est_input[run_idx]}'[{vol_idx}]'
+
+            # Preprocess weight dset, if any
+            if args.weight is not None:
+                if args.weight[0] == 'raw':
+                    # Do nothing. Use the given weight as it is
+                    !3dcopy {args.weight[1]} {weight_file} -overwrite
+                elif args.weight[0] in ['taper', 'gauss', 'blur']:
+                    # 4mm FWHM spatial gaussian filter to taper the weight profile to zero
+                    !3dcalc -a {args.weight[0]} -expr 'a*1000' -prefix {weight_file} -overwrite
+                    !3dmerge -1blur_fwhm 4 -doall -prefix {weight_file} -overwrite {weight_file}
+                    !3dcalc -a {weight_file} -expr 'a/1000' -prefix {weight_file} -overwrite
+                elif args.weight[0] == 'mask':
+                    # Use the masked base image after blurring as weight
+                    !3dcalc -a {args.weight[1]} -b {template_file} -expr 'a*b' -prefix {weight_file} -overwrite
+                    !3dmerge -1blur_fwhm 4 -doall -prefix {weight_file} -overwrite {weight_file}
+
+            # Estimate volreg parameters
+            if args.algorithm[0] == 'volreg':
+                weight_cmd = '' if args.weight is None else '-weight {0}'.format(weight_file)
+                for k in range(n_files):
+                    # !3dvolreg -verbose -zpad 2 -base {template_file} {weight_cmd} \
+                    #     -1Dfile {d_files[k]} \
+                    #     -1Dmatrix_save {mat_files[k]} \
+                    #     -prefix {tmp_files[k]} -overwrite \
+                    #     {est_input[k]}
+                    pc.check_call("3dvolreg -verbose -zpad 2 -base {0} {1} \
+                        -1Dfile {2} \
+                        -1Dmatrix_save {3} \
+                        -prefix {4} -overwrite \
+                        {5}".format(template_file, weight_cmd, d_files[k], mat_files[k], tmp_files[k], est_input[k]))
+                pc.wait()
+            elif args.algorithm[0] == '3params':
+                weight_cmd = '-autoweight' if args.weight is None else '-weight {0}'.format(weight_file)
+                if len(args.algorithm) > 1:
+                    axes = ''.join(sorted(args.algorithm[1:3]))
+                else: # Infer fixed dimensions according to dimension of minimum slices
+                    dims = afni.get_head_dims(args.input[0])
+                    axes = ['yz', 'xz', 'xy'][np.argmin(dims[:3])]
+                fixed = {'xy': [3, 5, 6], 'yz': [1, 4, 6], 'xz': [2, 4, 5]}[axes]
+                for k in range(n_files):
+                    # !3dAllineate -base {template_file} {weight_cmd} -source_automask \
+                    #     -wtprefix {weight_file} \
+                    #     -cost {args.cost} -warp shift_rotate \
+                    #     -parfix {fixed[0]} 0 -parfix {fixed[1]} 0 -parfix {fixed[2]} 0 \
+                    #     -1Dfile {d_files[k]} \
+                    #     -1Dmatrix_save {mat_files[k]} \
+                    #     -prefix {tmp_files[k]} -overwrite \
+                    #     -input {est_input[k]}
+                    pc.check_call("3dAllineate -base {0} {1} -source_automask \
+                        -wtprefix {2} \
+                        -cost {3} -warp shift_rotate \
+                        -parfix {4} 0 -parfix {5} 0 -parfix {6} 0 \
+                        -1Dfile {7} \
+                        -1Dmatrix_save {8} \
+                        -prefix {9} -overwrite \
+                        -input {10}".format(template_file, weight_cmd, weight_file,
+                        args.cost, fixed[0], fixed[1], fixed[2], d_files[k],
+                        mat_files[k], tmp_files[k], est_input[k]))
+                pc.wait()
+
+        # Concat transforms
+        # Note that in this program, xform that specified with -x first is applied first.
+        # But for cat_matvec, last xform is applied first.
+        for k in range(n_files):
+            xforms = ' '.join([xform[k] for xform in args.transform][::-1])
+            !cat_matvec -ONELINE {xforms} > {warp_files[k]}
+        # -master can always be the same
+        !3dTcat -prefix {master_file} -overwrite \
+            {args.input[0]}'[0]'
+
+        # Apply all-in-one transform
+        for k in range(n_files):
+            # !3dAllineate -base {master_file} \
+            #     -source {args.input[k]} \
+            #     -1Dmatrix_apply {warp_files[k]} \
+            #     -prefix {args.output[k]} -overwrite
+            pc.check_call("3dAllineate -base {0} \
+                -source {1} \
+                -1Dmatrix_apply {2} \
+                -prefix {3} -overwrite".format(master_file, args.input[k], warp_files[k], args.output[k]))
+        pc.wait()
+
+        # Evaluation
+        !3dTcat -prefix {novr_file} -overwrite '{" ".join(args.input)}'
+        !3dTcat -prefix {all_file} -overwrite '{" ".join(args.output)}'
+        !3dTstat -mean -prefix {mean_file} -overwrite {all_file}
+        if args.keep_temp:
+            !3dTcat -prefix {est_file} -overwrite '{" ".join(tmp_files)}'
+        if vis_cmd is not None:
+            !mripy_4dslice.ipy {vis_cmd} -i {all_file} -o {vis_file}
+
+        # Remove temp files
+        if not args.keep_temp:
+            !rm {tmp_uuid}*
+
+        # Sanity check
+        print('==============================')
+        print('motion correction with "{0}{1}", cost={2}'.format(
+            args.algorithm[0],
+            '({0})'.format(axes) if args.algorithm[0]=='3params' else '',
+            args.cost))

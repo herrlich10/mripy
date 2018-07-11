@@ -1,0 +1,54 @@
+#!/usr/bin/env ipython_wrapper
+# -*- coding: utf-8 -*-
+from __future__ import print_function, division, absolute_import, unicode_literals
+import argparse, textwrap
+import subprocess
+import numpy as np
+
+
+def get_slice_cmd(e, d, s, a):
+    '''Barely keep the specified voxel'''
+    if s is not None:
+        s = sorted(np.float_(s))
+        return '-{0} -{1} -{2} -{3} '.format(a[0], int((s[0]-e[0])/d), a[1], int((e[1]-s[1])/d))
+    else:
+        return ''
+
+
+if __name__ == '__main__':
+    import script_utils # Append mripy to Python path
+    from mripy import utils, afni
+    timer = script_utils.ScriptTimer()
+
+    parser = argparse.ArgumentParser(description='Extract slices in any of the x/y/z/t dimensions.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent('''\
+            Note that:
+            1) x/y/z are head axes (RL, AP, IS, in dicom order) as afni gui,
+                not image array dims as returned by 3dinfo -n4.
+            2) All slice boundaries are inclusive, i.e., the selected
+                coordinates will be included in the output.
+            3) The order of the two numbers of the boundary is irrelevant.
+
+            Examples:
+              $ mripy_4dslice.ipy -x 12.5 -20 -t 0 134 -o func2 -i func+orig
+            '''))
+    parser.add_argument('-i', '--input', metavar='input_dset', required=True)
+    parser.add_argument('-o', '--output', metavar='output_dset', required=True)
+    parser.add_argument('-x', nargs=2, help='slice boundary in RL dimension')
+    parser.add_argument('-y', nargs=2, help='slice boundary in AP dimension')
+    parser.add_argument('-z', nargs=2, help='slice boundary in IS dimension')
+    parser.add_argument('-t', nargs=2, help='slice boundary in t dimension')
+    args = parser.parse_args()
+
+
+    !mripy_4dslice.ipy -i GRE02+orig -o tmp.GRE02+orig -y 32 88
+    !@chauffeur_afni \
+        -ulay tmp.GRE02+orig -olay_off \
+        -prefix GRE02 \
+        -delta_slices -1 -1 0 \
+        -montx 1 -monty 10 \
+        -do_clean
+    !rm GRE02.sag.png
+    !rm GRE02.cor.png
+    !rm tmp.*
