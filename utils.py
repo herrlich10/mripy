@@ -11,6 +11,24 @@ import numpy as np
 from . import six, afni
 
 
+# class ArrayWrapper(type):
+#     def make_descriptor(name):
+#         '''
+#         Notes
+#         -----
+#         1. Method (or non-data) descriptors are objects that define __get__() method
+#             but not __set__() method. [https://docs.python.org/3.6/howto/descriptor.html]
+#         2. The magic methods of an object (e.g., arr.__add__) are descriptors, not callable.
+#             So here we must return a property (with getter only), not a lambda.
+#         3. Strangely, the whole thing must be wrapped in a nested function.
+#             [https://stackoverflow.com/questions/9057669/how-can-i-intercept-calls-to-pythons-magic-methods-in-new-style-classes]
+#         4. The wrappe array must be named self.arr
+#         '''
+from .paraproc import format_duration
+from .paraproc import cmd_for_exec, cmd_for_disp
+from .paraproc import PooledCaller, SharedMemoryArray
+
+
 # Command line syntactic sugar
 def expand_index_list(index_list, format=None):
     '''
@@ -30,21 +48,6 @@ def expand_index_list(index_list, format=None):
         else: # 3
             flatten.append(int(x))
     return flatten if format is None else [format % x for x in flatten]
-
-
-def format_duration(duration, format='standard'):
-    if format == 'short':
-        units = ['d', 'h', 'm', 's']
-    elif format == 'long':
-        units = [' days', ' hours', ' minutes', ' seconds']
-    else:
-        units = [' day', ' hr', ' min', ' sec']
-    values = [int(duration//86400), int(duration%86400//3600), int(duration%3600//60), duration%60]
-    for K in range(len(values)): # values[K] would be the first non-zero value
-        if values[K] > 0:
-            break
-    formatted = ((('%d' if k<len(values)-1 else '%.3f') % values[k]) + units[k] for k in range(len(values)) if k >= K)
-    return ' '.join(formatted)
 
 
 def select_and_replace_affix(glob_pattern, old_affix, new_affix):
@@ -155,27 +158,6 @@ def temp_prefix(prefix='tmp_', n=4, suffix='.'):
     return prefix + uuid.uuid4().hex[:n] + suffix
 
 
-def cmd_for_exec(cmd, cmd_kws):
-    '''
-    Split the cmd string into a list, if not shell=True.
-    Join the cmd list into a string, if shell=True.
-    '''
-    if not callable(cmd):
-        if 'shell' in cmd_kws and cmd_kws['shell']: # cmd string is required
-            if not isinstance(cmd, six.string_types):
-                cmd = ' '.join(cmd)
-        else: # cmd list is required
-            if isinstance(cmd, six.string_types):
-                cmd = shlex.split(cmd) # Split by space, preserving quoted substrings
-    return cmd
-
-
-def cmd_for_disp(cmd):
-    if isinstance(cmd, list):
-        return ' '.join(cmd)
-    else:
-        return cmd
-
 
 class ParallelCaller(object):
     def __init__(self):
@@ -201,166 +183,6 @@ class ParallelCaller(object):
         self.ps = [] # Reset subprocess list
         return codes
 
-
-class PooledCaller(object):
-    def __init__(self, pool_size=None):
-        if pool_size is None:
-            self.pool_size = multiprocessing.cpu_count() * 3 // 4
-        else:
-            self.pool_size = pool_size
-        self.ps = []
-        self.cmd_queue = []
-        self._n_cmds = 0 # Accumulated for generating cmd idx
-        self._pid2idx = {}
-        self._return_codes = []
- 
-    def check_call(self, cmd, *args, **kwargs):
-        '''
-        Asynchronous check_call (queued launch, return immediately).
-        Multiple commands can be stitched sequentially with ";" in linux/mac only if shell=True.
-        You can even execute python callable in parallel via multiprocessing.
-        
-        Parameters
-        ----------
-        cmd : list, str, or callable
-        '''
-        cmd = cmd_for_exec(cmd, kwargs)
-        self.cmd_queue.append((self._n_cmds, cmd, args, kwargs))
-        self._n_cmds += 1
-
-    def dispatch(self):
-        # If there are free slot and more jobs
-        while len(self.ps) < self.pool_size and len(self.cmd_queue) > 0:
-            idx, cmd, args, kwargs = self.cmd_queue.pop(0)
-            print('>> job {0}: {1}'.format(idx, cmd_for_disp(cmd)))
-            if callable(cmd):
-                p = multiprocessing.Process(target=cmd, args=args, kwargs=kwargs)
-                p.start()
-            else:
-                p = subprocess.Popen(cmd, **kwargs)
-            self.ps.append(p)
-            self._pid2idx[p.pid] = idx
-
-    def wait(self):
-        '''Wait for all jobs in the queue to finish.'''
-        self._start_time = time.time()
-        while len(self.ps) > 0 or len(self.cmd_queue) > 0:
-            # Dispatch jobs if possible
-            self.dispatch()
-            # Poll workers' state
-            for p in self.ps:
-                if isinstance(p, subprocess.Popen) and p.poll() is not None: # If the process is terminated
-                    self._return_codes.append((self._pid2idx[p.pid], p.returncode))
-                    self.ps.remove(p)
-                elif isinstance(p, multiprocessing.Process) and not p.is_alive(): # If the process is terminated
-                    self._return_codes.append((self._pid2idx[p.pid], p.exitcode))
-                    self.ps.remove(p)
-            time.sleep(0.1)
-        codes = [code for idx, code in sorted(self._return_codes)]
-        duration = time.time() - self._start_time
-        print('>> All {0} jobs done in {1}.'.format(self._n_cmds, format_duration(duration)))
-        if np.any(codes):
-            print('returncode: {0}', codes)
-        else:
-            print('all returncodes are 0.')
-        self._n_cmds = 0
-        self._pid2idx = {}
-        self._return_codes = []
-        return codes
-
-
-class ArrayWrapper(type):
-    '''
-    This is the metaclass for classes that wrap an array and delegate 
-    non-reimplemented operators (among other magic functions) to the wrapped array
-    '''
-    def __init__(cls, name, bases, dct):
-        def make_descriptor(name):
-            '''
-            Notes
-            -----
-            1. Method (or non-data) descriptors are objects that define __get__() method
-               but not __set__() method. [https://docs.python.org/3.6/howto/descriptor.html]
-            2. The magic methods of an object (e.g., arr.__add__) are descriptors, not callable.
-               So here we must return a property (with getter only), not a lambda.
-            3. Strangely, the whole thing must be wrapped in a nested function.
-               [https://stackoverflow.com/questions/9057669/how-can-i-intercept-calls-to-pythons-magic-methods-in-new-style-classes]
-            4. The wrappe array must be named self.arr
-            '''
-            return property(lambda self: getattr(self.arr, name))
-
-        type.__init__(cls, name, bases, dct)
-        ignore = 'class mro new init setattr getattr getattribute'
-        ignore = set('__{0}__'.format(name) for name in ignore.split())
-        for name in dir(np.ndarray):
-            if name.startswith('__'):
-                if name not in ignore and name not in dct:
-                    setattr(cls, name, make_descriptor(name))
-
-
-class SharedMemoryArray(object, metaclass=ArrayWrapper):
-    '''
-    This class can be used as a usual np.ndarray, but its data buffer
-    is allocated in shared memory (under Cached Files in memory monitor), 
-    and can be passed across processes without any data copy/duplication, 
-    even when write access happens (which is lock-synchronized).
-    So it is very efficient when used with multiprocessing.
-
-    This implementation also demonstrates the power of composition + metaclass,
-    as opposed to the canonical multiple inheritance.
-    '''
-    def __init__(self, dtype, shape, initializer=None, lock=True):
-        self.dtype = np.dtype(dtype)
-        self.shape = shape
-        if initializer is None:
-            # Preallocate memory using multiprocessing is the preferred usage
-            self.shared_arr = multiprocessing.Array(self.dtype2ctypes[self.dtype], int(np.prod(self.shape)), lock=lock)
-        else:
-            self.shared_arr = multiprocessing.Array(self.dtype2ctypes[self.dtype], initializer, lock=lock)
-        if not lock:
-            self.arr = np.frombuffer(self.shared_arr, dtype=self.dtype).reshape(self.shape)
-        else:
-            self.arr = np.frombuffer(self.shared_arr.get_obj(), dtype=self.dtype).reshape(self.shape)
- 
-    @classmethod
-    def zeros(cls, shape, dtype=float, lock=True):
-        '''
-        Preallocate memory using multiprocessing, and access from current 
-        or another process (without copying) using numpy.
-        This is the preferred usage, which avoids holding two copies of the
-        potentially very large data simultaneously in the memory.
-        '''
-        return cls(dtype, shape, lock=lock)
-
-    @classmethod
-    def from_array(cls, arr, lock=True):
-        return cls(arr.dtype, arr.shape, arr.ravel(), lock=lock)
-
-    def __getattr__(self, attr):
-        if attr in ['acquire', 'release']:
-            return getattr(self.shared_arr, attr)
-        else:
-            return getattr(self.arr, attr)
-
-    def __dir__(self):
-        return list(self.__dict__.keys()) + ['acquire', 'release'] + dir(self.arr)
-
-    dtype2ctypes = {
-        bool: ctypes.c_bool,
-        int: ctypes.c_long,
-        float: ctypes.c_double,
-        np.dtype('bool'): ctypes.c_bool,
-        np.dtype('int64'): ctypes.c_long,
-        np.dtype('int32'): ctypes.c_int,
-        np.dtype('int16'): ctypes.c_short,
-        np.dtype('int8'): ctypes.c_byte,
-        np.dtype('uint64'): ctypes.c_ulong,
-        np.dtype('uint32'): ctypes.c_uint,
-        np.dtype('uint16'): ctypes.c_ushort,
-        np.dtype('uint8'): ctypes.c_ubyte,
-        np.dtype('float64'): ctypes.c_double,
-        np.dtype('float32'): ctypes.c_float,
-        }
 
 
 def parallel_1D(cmd, in_file, prefix, n_jobs=1, combine_output=True, **kwargs):

@@ -174,19 +174,22 @@ def smooth_verts_data(verts, faces, data, factor=0.1, n_iters=1):
 
 
 def compute_intermediate_mesh(inner, outer, alpha, method='equivolume'):
-    if np.isscalar(alpha) and alpha > 1:
-        alpha = np.linspace(0, 1, alpha+1)
-    alpha = np.atleast_2d(alpha).reshape(-1, 1)
+    alpha = np.array(alpha).reshape(-1, 1)
     vin, fin = io.read_asc(inner) if isinstance(inner, six.string_types) else inner
     vout, fout = io.read_asc(outer) if isinstance(outer, six.string_types) else outer
     Ain = compute_verts_area(vin, fin)
     Aout = compute_verts_area(vout, fout)
-    if method == 'equivolume':
+    if method in ['equivolume', 'equivolume_inside']:
         smooth_factor = 0.1
         smooth_iters = 2
         Ain = smooth_verts_data(vin, fin, Ain, factor=smooth_factor, n_iters=smooth_iters)
         Aout = smooth_verts_data(vout, fout, Aout, factor=smooth_factor, n_iters=smooth_iters)
-        rho = 1 / (Aout - Ain) * (-Ain + np.sqrt(alpha * Aout**2 + (1-alpha) * Ain**2))
+        if method == 'equivolume':
+            rho = 1 / (Aout - Ain) * (-Ain + np.sqrt(alpha * Aout**2 + (1-alpha) * Ain**2))
+        elif method == 'equivolume_inside':
+            rho = alpha + np.zeros(len(Ain))
+            inside = ((0 <= alpha) & (alpha <= 1)).ravel()
+            rho[inside,:] = 1 / (Aout - Ain) * (-Ain + np.sqrt(alpha[inside,:] * Aout**2 + (1-alpha[inside,:]) * Ain**2))
     elif method == 'equidistance':
         rho = alpha
     verts = (1-rho[...,np.newaxis]) * vin + rho[...,np.newaxis] * vout
@@ -198,10 +201,10 @@ def compute_voxel_depth(xyz, inner, outer, S2E_mat, method='equivolume'):
     if isinstance(xyz, six.string_types):
         xyz = io.Mask(xyz, kind='full').xyz
     if isinstance(S2E_mat, six.string_types):
-        S2E_mat = afni.get_S2E_mat(S2E_mat, mat='S2E')
+        S2E_mat = afni.get_S2E_mat(S2E_mat, mat='S2B')
     alphas = np.linspace(0, 1, 11)
-    verts, faces = compute_intermediate_mesh(inner, outer, 10, method=method)
-    # verts = np.dot(verts, S2E_mat[:,:3]) + S2E_mat[:,3]
+    verts, faces = compute_intermediate_mesh(inner, outer, alphas, method=method)
+    verts = np.dot(S2E_mat[:,:3], (verts*[-1,-1,1]).transpose(0,2,1)).transpose(1,2,0) + S2E_mat[:,3]
     face_xyz = (verts[:,faces[:,0],:] + verts[:,faces[:,1],:] + verts[:,faces[:,2],:]) / 3
     kdt = spatial.cKDTree(face_xyz.reshape(-1,3), )
     depth = np.zeros(xyz.shape[0])
@@ -213,7 +216,6 @@ def compute_voxel_depth(xyz, inner, outer, S2E_mat, method='equivolume'):
         depth[k] = alphas[idx]
         pp.step()
     return depth
-    # return xyz, face_xyz
 
 
 def intermediate_asc(fname, inner, outer, alpha, method='equivolume'):

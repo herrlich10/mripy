@@ -805,7 +805,7 @@ def get_ni_type(x):
 
 def write_1D_nodes(fname, idx, val):
     if idx is None:
-        idx = np.arange(len(d))
+        idx = np.arange(len(val))
     formats = dict(int='%d', float='%.6f')
     np.savetxt(fname, np.c_[idx, val], fmt=['%d', formats[get_ni_type(val)]])
     

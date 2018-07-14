@@ -21,17 +21,20 @@ if __name__ == '__main__':
     args = parser.parse_args()
     spec = afni.get_suma_info(args.suma)['spec']
     hemis = ['lh', 'rh']
-    prefix = (afni.get_prefix(args.base)+'.depth') if args.prefix is None else args.prefix
+    prefix = afni.get_prefix(args.base) if args.prefix is None else args.prefix
+    depth_out = prefix + '.depth'
+    weight_out = prefix + '.weight'
     temp_folder = utils.temp_prefix(suffix='')
     os.makedirs(temp_folder)
+    pc = utils.PooledCaller(pool_size=args.jobs)
 
     # Calculate relative depth (equidistance) for current args.base, if necessary (could take hours...)
-    if not utils.exists(prefix + '+orig.HEAD'): # Prevent unexpected overwrite
+    if not utils.exists(depth_out + '+orig.HEAD'): # Prevent unexpected overwrite
         if args.method.lower() == '3dsurfmask':
             pc = utils.PooledCaller(pool_size=4)
             for hemi in hemis:
                 for surface in ['smoothwm', 'pial']:
-                    print('>> Computing tmp.{0}.{1}.{2}+orig'.format(prefix, hemi, surface))
+                    print('>> Computing tmp.{0}.{1}.{2}+orig'.format(depth_out, hemi, surface))
                     n_chunks = max(1, args.jobs//4)
                     # The specific algorithm used by ``3dSurfMask`` requires us to divide the volume
                     # only along the slice dimension, so that the surface remain "closed" within the subvolume.
@@ -41,54 +44,56 @@ if __name__ == '__main__':
                         '-sv', args.surf_vol,
                         '-grid_parent', '{in_file}',
                         '-fill_method', 'FAST',
-                        '-prefix', '{prefix}', '-overwrite'], 
-                        in_file=args.base, prefix='.'.join(('tmp', prefix, hemi, surface)), 
+                        '-prefix', '{depth_out}', '-overwrite'], 
+                        in_file=args.base, prefix='.'.join(('tmp', depth_out, hemi, surface)), 
                         n_jobs=n_chunks, schema=[1,1,n_chunks], fname_mapper={'_out': '_out.m'})
             pc.wait()
             for hemi in hemis:
                 # Calculate relative depth for the whole volume
-                !3dcalc -a tmp.{prefix}.{hemi}.smoothwm+orig -b tmp.{prefix}.{hemi}.pial+orig \
-                    -expr '-a/(b-a)' -prefix tmp.{prefix}.{hemi} -overwrite
+                !3dcalc -a tmp.{depth_out}.{hemi}.smoothwm+orig -b tmp.{depth_out}.{hemi}.pial+orig \
+                    -expr '-a/(b-a)' -prefix tmp.{depth_out}.{hemi} -overwrite
                 # Keep only near-surface voxels
-                !3dcalc -a tmp.{prefix}.{hemi}+orig -b tmp.{prefix}.{hemi}.pial+orig \
+                !3dcalc -a tmp.{depth_out}.{hemi}+orig -b tmp.{depth_out}.{hemi}.pial+orig \
                     -expr 'a*step(a+0.5)*step(1.5-a)*step(5-b)*step(b+1)' \
-                    -prefix tmp.{prefix}.{hemi} -overwrite
+                    -prefix tmp.{depth_out}.{hemi} -overwrite
         elif args.method.lower() == 'equivolume':
-            n_laminae = 11
-            depths = np.linspace(-0.0, 1.0, n_laminae)
-            alphas = np.r_[depths, depths[-1]+0.1] - 0.05 # Native jobs = 17~18 (so jobs=9 is good)
+            depths = np.r_[np.linspace(-0.2, 1.1, 14)+0.05]
+            alphas = np.r_[np.linspace(-0.2, 1.2, 15)] # Native jobs = 14~15 (so jobs=8 is good)
+            n_laminae = len(depths)
+            lamina_names = {}
             lamina_files = {}
             inner = {}
             outer = {}
-            pc = utils.PooledCaller(pool_size=args.jobs)
             for hemi in hemis:
+                lamina_names[hemi] = []
                 lamina_files[hemi] = []
                 inner[hemi] = io.read_asc(path.join(args.suma, '{0}.smoothwm.asc'.format(hemi)))
                 outer[hemi] = io.read_asc(path.join(args.suma, '{0}.pial.asc'.format(hemi)))
                 for k, alpha in enumerate(alphas):
-                    lamina_files[hemi].append('{0}.L{1:02d}.asc'.format(hemi, k))
-                    pc.check_call(surface.intermediate_asc, path.join(temp_folder, lamina_files[hemi][k]), inner[hemi], outer[hemi], alpha, method='equivolume')
+                    lamina_names[hemi].append('{0}.L{1:02d}.asc'.format(hemi, k))
+                    lamina_files[hemi].append(path.join(temp_folder, lamina_names[hemi][k]))
+                    pc.check_call(surface.intermediate_asc, lamina_files[hemi][k], inner[hemi], outer[hemi], alpha, method='equivolume_inside')
             pc.wait()
             # Generate spec files
             lamina_spec = {hemi: path.join(temp_folder, 'lamina_{0}.spec'.format(hemi)) for hemi in hemis}
             for hemi in hemis:
-                afni.generate_spec(lamina_spec[hemi], lamina_files[hemi])
+                afni.generate_spec(lamina_spec[hemi], lamina_names[hemi])
             # Project surface to volume
-            weight_files = {}
+            weight1_files = {}
             for hemi in hemis:
-                weight_files[hemi] = []
+                weight1_files[hemi] = []
                 for k in range(n_laminae):
-                    weight_files[hemi].append(path.join(temp_folder, '{0}.w{1:02d}+orig.HEAD'.format(hemi, k)))
+                    weight1_files[hemi].append(path.join(temp_folder, '{0}.w{1:02d}+orig.HEAD'.format(hemi, k)))
                     pc.check_call(['3dSurf2Vol',
                         '-spec', lamina_spec[hemi],
-                        '-surf_A', lamina_files[hemi][k],
-                        '-surf_B', lamina_files[hemi][k+1],
+                        '-surf_A', lamina_names[hemi][k],
+                        '-surf_B', lamina_names[hemi][k+1],
                         '-sv', args.surf_vol,
                         '-grid_parent', args.base,
                         '-map_func', 'count',
                         '-f_steps', '20',
                         '-f_index', 'nodes',
-                        '-prefix', weight_files[hemi][k], 
+                        '-prefix', weight1_files[hemi][k], 
                         '-overwrite'])
             pc.wait()
             # Project lamina thickness to volume
@@ -111,8 +116,8 @@ if __name__ == '__main__':
                     thick_files[hemi].append(path.join(temp_folder, '{0}.T{1:02d}+orig.HEAD'.format(hemi, k)))
                     pc.check_call(['3dSurf2Vol',
                         '-spec', lamina_spec[hemi],
-                        '-surf_A', lamina_files[hemi][k],
-                        '-surf_B', lamina_files[hemi][k+1],
+                        '-surf_A', lamina_names[hemi][k],
+                        '-surf_B', lamina_names[hemi][k+1],
                         '-sv', args.surf_vol,
                         '-grid_parent', args.base,
                         '-sdata_1D', thick_1Ds[hemi][k],
@@ -123,38 +128,51 @@ if __name__ == '__main__':
                         '-overwrite'])
             pc.wait()
             # Weighted sum
-            weight2_files = {}
+            weight_files = {}
             for hemi in hemis:
-                weight2_files[hemi] = []
+                weight_files[hemi] = []
                 for k in range(n_laminae):
-                    weight2_files[hemi].append(path.join(temp_folder, '{0}.W{1:02d}+orig.HEAD'.format(hemi, k)))
-                    pc.check_call(f'''3dcalc -a {weight_files[hemi][k]} -b {thick_files[hemi][k]} \
-                        -expr 'a*b' -prefix {weight2_files[hemi][k]} -overwrite
+                    weight_files[hemi].append(path.join(temp_folder, '{0}.W{1:02d}+orig.HEAD'.format(hemi, k)))
+                    pc.check_call(f'''3dcalc -a {weight1_files[hemi][k]} -b {thick_files[hemi][k]} \
+                        -expr 'a*b' -prefix {weight_files[hemi][k]} -overwrite
                         ''', shell=True)
             pc.wait()
             wsum_files = {}
             for hemi in hemis:
                 wsum_files[hemi] = path.join(temp_folder, '{0}.WSum+orig.HEAD'.format(hemi))
                 pc.check_call(['3dTstat', '-sum', '-prefix', wsum_files[hemi], '-overwrite',
-                    '"{0}"'.format(' '.join(weight2_files[hemi]))], shell=True)
+                    '"{0}"'.format(' '.join(weight_files[hemi]))], shell=True)
             pc.wait()
             depth_files = {}
             for hemi in hemis:
                 depth_files[hemi] = []
                 for k in range(n_laminae):
                     depth_files[hemi].append(path.join(temp_folder, '{0}.D{1:02d}+orig.HEAD'.format(hemi, k)))
-                    pc.check_call(f'''3dcalc -a {weight2_files[hemi][k]} -b {wsum_files[hemi]} \
-                        -expr 'a/b*{depths[k]:.3f}' -prefix {depth_files[hemi][k]} -overwrite
+                    pc.check_call(f'''
+                        3dcalc -a {weight_files[hemi][k]} -b {wsum_files[hemi]} \
+                            -expr 'a/b' -prefix {weight_files[hemi][k]} -overwrite;
+                        3dcalc -a {weight_files[hemi][k]} \
+                            -expr 'a*{depths[k]:.3f}' -prefix {depth_files[hemi][k]} -overwrite;
                         ''', shell=True)
             pc.wait()
             for hemi in hemis:
-                pc.check_call(['3dTstat', '-sum', '-prefix', f'tmp.{prefix}.{hemi}', '-overwrite',
-                    '"{0}"'.format(' '.join(depth_files[hemi]))], shell=True)
+                pc.check_call(f'''
+                    3dTstat -sum -prefix tmp.{depth_out}.{hemi} -overwrite "{' '.join(depth_files[hemi])}";
+                    3dTcat -prefix tmp.{weight_out}.{hemi} -overwrite "{' '.join(weight_files[hemi])}";
+                    ''', shell=True)
             pc.wait()
         
         # Combine left and right hemisphere
-        !3dcalc -l tmp.{prefix}.lh+orig -r tmp.{prefix}.rh+orig \
-            -expr 'l+r' -prefix {prefix} -overwrite
+        !3dcalc -l tmp.{depth_out}.lh+orig -r tmp.{depth_out}.rh+orig \
+            -expr 'l+r' -prefix {depth_out} -overwrite
+        !3dcalc -l tmp.{weight_out}.lh+orig -r tmp.{weight_out}.rh+orig \
+            -expr 'max(l,r)' -prefix {weight_out} -overwrite
+
+    # Check successful
+    if pc.all_successful():
+        print('>> Depth estimation was done without error.')
+    else:
+        print('>> Sorry, but something went wrong in the middle...')
 
     # Remove temp files
     !rm tmp.*
