@@ -188,6 +188,19 @@ class PooledCaller(object):
     def all_successful(self):
         return not np.any([job['returncode'] for job in self._log])
 
+    def batches(self, total, batch_size=None):
+        if batch_size is None:
+            batch_size = int(np.ceil(total / self.pool_size / 10))
+        return (range(k, min(k+batch_size, total)) for k in range(0, total, batch_size))
+
+    def __call__(self, job_generator):
+        # This is similar to the joblib.Parallel signature
+        n_batches = 0
+        for _ in job_generator:
+            n_batches += 1
+        print('>> Start with a total of {0} jobs...'.format(n_batches))
+        self.wait()
+
 
 class ArrayWrapper(type):
     '''
@@ -283,3 +296,4 @@ class SharedMemoryArray(object, metaclass=ArrayWrapper):
         np.dtype('float64'): ctypes.c_double,
         np.dtype('float32'): ctypes.c_float,
         }
+        

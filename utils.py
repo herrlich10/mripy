@@ -268,6 +268,7 @@ def parallel_3D(cmd, in_file, prefix, n_jobs=1, schema=None, fname_mapper=None, 
                     return new_str
             else:
                 return s
+    output_dir = path.dirname(prefix)
     # Determine split schema
     dims = afni.get_head_dims(in_file)[:3]
     if schema is None:
@@ -296,7 +297,7 @@ def parallel_3D(cmd, in_file, prefix, n_jobs=1, schema=None, fname_mapper=None, 
     for m, (ns0, ne0) in enumerate(split_schema[0]['splits']):
         for n, (ns1, ne1) in enumerate(split_schema[1]['splits']):
             for l, (ns2, ne2) in enumerate(split_schema[2]['splits']):
-                label = '{0}{1:02d}_{2:02d}_{3:02d}'.format(tmp_, m, n, l)
+                label = path.join(output_dir, '{0}{1:02d}_{2:02d}_{3:02d}'.format(tmp_, m, n, l))
                 split_params[label] = (ns0, ne0, ns1, ne1, ns2, ne2, m, n, l)
                 pc.check_call(f'''
                     3dZeropad -{s0} -{ns0} -{e0} -{ne0} -{s1} -{ns1} -{e1} -{ne1} -{s2} -{ns2} -{e2} -{ne2} \
@@ -318,9 +319,10 @@ def parallel_3D(cmd, in_file, prefix, n_jobs=1, schema=None, fname_mapper=None, 
                     -prefix {label}_pad -overwrite {fi}
                 ''')
         pc.wait()
+        glob_pattern = path.join(output_dir, f'{tmp_}*_pad+orig.HEAD')
         subprocess.check_call(f'''
-            3dTstat -sum -prefix {prefix} -overwrite "{tmp_}*_pad+orig.HEAD"
+            3dTstat -sum -prefix {prefix} -overwrite "{glob_pattern}"
             ''', shell=True)
     # Remove temp files
-    for f in glob.glob(tmp_+'*'):
+    for f in glob.glob(path.join(output_dir, tmp_+'*')):
         os.remove(f)

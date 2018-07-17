@@ -135,7 +135,7 @@ def interp_dset(fdset, fmesh, prefix):
     io.write_niml_bin_nodes(utils.fname_with_ext(prefix, '.niml.dset'), np.arange(new_val.shape[0]), new_val)
 
 
-def compute_verts_area(verts, faces):
+def compute_verts_area(verts, faces, dtype=None):
     '''
     Compute element area for each vertex.
     '''
@@ -144,7 +144,7 @@ def compute_verts_area(verts, faces):
     B = verts[faces[:,1],:]
     C = verts[faces[:,2],:]
     face_areas = 0.5*np.linalg.norm(np.cross(B-A, C-A), axis=1)
-    vert_areas = np.zeros(verts.shape[0])
+    vert_areas = np.zeros(verts.shape[0], dtype=dtype)
     # Attribtue the face area to each of its three vertices
     # for k, f in enumerate(faces):
     #     vert_areas[f] += face_areas[k]
@@ -157,10 +157,10 @@ def compute_verts_area(verts, faces):
     return vert_areas
 
 
-def smooth_verts_data(verts, faces, data, factor=0.1, n_iters=1):
+def smooth_verts_data(verts, faces, data, factor=0.1, n_iters=1, dtype=None):
     for _ in range(n_iters):
-        smooth_data = np.zeros(len(data))
-        counts = np.zeros(len(data), dtype=int)
+        smooth_data = np.zeros(len(data), dtype=dtype)
+        counts = np.zeros(len(data), dtype=dtype)
         for a, b, c in faces:
             smooth_data[a] += data[b] + data[c]
             smooth_data[b] += data[c] + data[a]
@@ -173,21 +173,21 @@ def smooth_verts_data(verts, faces, data, factor=0.1, n_iters=1):
     return smooth_data
 
 
-def compute_intermediate_mesh(inner, outer, alpha, method='equivolume'):
-    alpha = np.array(alpha).reshape(-1, 1)
-    vin, fin = io.read_asc(inner) if isinstance(inner, six.string_types) else inner
-    vout, fout = io.read_asc(outer) if isinstance(outer, six.string_types) else outer
-    Ain = compute_verts_area(vin, fin)
-    Aout = compute_verts_area(vout, fout)
+def compute_intermediate_mesh(inner, outer, alpha, method='equivolume', dtype=None):
+    alpha = np.array(alpha, dtype=dtype).reshape(-1, 1)
+    vin, fin = io.read_asc(inner, dtype=dtype) if isinstance(inner, six.string_types) else inner
+    vout, fout = io.read_asc(outer, dtype=dtype) if isinstance(outer, six.string_types) else outer
+    Ain = compute_verts_area(vin, fin, dtype=dtype)
+    Aout = compute_verts_area(vout, fout, dtype=dtype)
     if method in ['equivolume', 'equivolume_inside']:
         smooth_factor = 0.1
         smooth_iters = 2
-        Ain = smooth_verts_data(vin, fin, Ain, factor=smooth_factor, n_iters=smooth_iters)
-        Aout = smooth_verts_data(vout, fout, Aout, factor=smooth_factor, n_iters=smooth_iters)
+        Ain = smooth_verts_data(vin, fin, Ain, factor=smooth_factor, n_iters=smooth_iters, dtype=dtype)
+        Aout = smooth_verts_data(vout, fout, Aout, factor=smooth_factor, n_iters=smooth_iters, dtype=dtype)
         if method == 'equivolume':
             rho = 1 / (Aout - Ain) * (-Ain + np.sqrt(alpha * Aout**2 + (1-alpha) * Ain**2))
         elif method == 'equivolume_inside':
-            rho = alpha + np.zeros(len(Ain))
+            rho = alpha + np.zeros(len(Ain), dtype=dtype)
             inside = ((0 <= alpha) & (alpha <= 1)).ravel()
             rho[inside,:] = 1 / (Aout - Ain) * (-Ain + np.sqrt(alpha[inside,:] * Aout**2 + (1-alpha[inside,:]) * Ain**2))
     elif method == 'equidistance':
@@ -197,28 +197,77 @@ def compute_intermediate_mesh(inner, outer, alpha, method='equivolume'):
     return verts.squeeze(), faces
 
 
-def compute_voxel_depth(xyz, inner, outer, S2E_mat, method='equivolume'):
+def compute_voxel_depth(xyz, inner, outer, S2E_mat, method='equivolume', n_jobs=4, dtype=None, lock=None):
+    '''
+    Parameters
+    ----------
+    method : str
+        "equivolume"
+        "equidistance"
+
+    Notes
+    -----
+    1. Unfortunately, dtype=np.float32 doesn't work for high density surface meshes
+       (because the element area becomes zero in some locations, which is invalid). 
+       Although it does work for ordinary meshes, it is unnecessary in that case.
+    '''
     if isinstance(xyz, six.string_types):
         xyz = io.Mask(xyz, kind='full').xyz
+    xyz = xyz.astype(dtype)
     if isinstance(S2E_mat, six.string_types):
         S2E_mat = afni.get_S2E_mat(S2E_mat, mat='S2B')
-    alphas = np.linspace(0, 1, 11)
-    verts, faces = compute_intermediate_mesh(inner, outer, alphas, method=method)
-    verts = np.dot(S2E_mat[:,:3], (verts*[-1,-1,1]).transpose(0,2,1)).transpose(1,2,0) + S2E_mat[:,3]
-    face_xyz = (verts[:,faces[:,0],:] + verts[:,faces[:,1],:] + verts[:,faces[:,2],:]) / 3
-    kdt = spatial.cKDTree(face_xyz.reshape(-1,3), )
-    depth = np.zeros(xyz.shape[0])
-    from mypy import mypy
-    pp = mypy.ProgressPrinter(len(depth), delta=0.0001)
-    for k, p in enumerate(xyz):
-        # idx = np.argmin(np.linalg.norm(p - face_xyz, axis=-1)) // faces.shape[0]
-        idx = kdt.query(p)[1] // faces.shape[0]
-        depth[k] = alphas[idx]
-        pp.step()
-    return depth
+    S2E_mat = S2E_mat.astype(dtype)
+    if method == 'equivolume':
+        method = 'equivolume_inside'
+    if lock is None:
+        lock = multiprocessing.Lock()
+    min_depth, max_depth = -0.2, 1.2
+    n_depths = round((max_depth - min_depth)/0.1) + 1
+    alphas = np.linspace(min_depth, max_depth, n_depths, dtype=dtype)
+    print('>> Compute intermediate meshes...')
+    verts, faces = compute_intermediate_mesh(inner, outer, alphas, method=method, dtype=dtype) # 234s
+    n_faces = faces.shape[0]
+    LPI2RAI = np.array([-1, -1, 1], dtype=dtype)
+    verts = np.dot(S2E_mat[:,:3], (verts*LPI2RAI).transpose(0,2,1)).transpose(1,2,0) + S2E_mat[:,3]
+    face_xyz = (verts[:,faces[:,0],:] + verts[:,faces[:,1],:] + verts[:,faces[:,2],:]).reshape(-1,3) / 3
+    print('>> Construct k-d tree...')
+    # kdt = spatial.cKDTree(face_xyz.reshape(-1,3)) # 171s
+    kdt = spatial.cKDTree(face_xyz) # This is slightly more memory efficient
+    depths = utils.SharedMemoryArray.zeros(xyz.shape[0], dtype=dtype, lock=False) # np.zeros(xyz.shape[0])
+    print('>> Compute cortical depth...')
+    def compute_depth(ids, depths, xyz, kdt, verts, faces, alphas, n_faces, n_depths, min_depth, max_depth):
+        for k in ids:
+            p = xyz[k]
+            # idx = np.argmin(np.linalg.norm(p - face_xyz, axis=-1)) // faces.shape[0]
+            idx = kdt.query(p)[1] # This is like 4000x faster!
+            fidx = idx % n_faces
+            didx = idx // n_faces
+            if didx == 0:
+                depths[k] = min_depth
+            elif didx == n_depths-1:
+                depths[k] = max_depth
+            else:
+                A, B, C = verts[didx-1:didx+2][:,faces[fidx,:],:].swapaxes(0,1)
+                N = np.cross(B - A, C - A)
+                N = N / np.linalg.norm(N, axis=-1, keepdims=True)
+                T = np.sum(A*N, axis=-1) - np.sum(p*N, axis=-1)
+                W = np.abs(T)
+                if T[0]*T[1] < 0:
+                    w = W[1] / (W[0] + W[1])
+                    depths[k] = w * alphas[didx-1] + (1-w) * alphas[didx]
+                else:
+                    w = W[1] / (W[2] + W[1])
+                    depths[k] = w * alphas[didx+1] + (1-w) * alphas[didx]
+    with lock:
+        pc = utils.PooledCaller(pool_size=n_jobs)
+        pc(pc.check_call(compute_depth, ids, depths, xyz, kdt, verts, faces, alphas, n_faces, n_depths, min_depth, max_depth) 
+            for ids in pc.batches(len(depths)))
+    return depths
 
 
 def intermediate_asc(fname, inner, outer, alpha, method='equivolume'):
+    if method == 'equivolume':
+        method = 'equivolume_inside'
     verts, faces = compute_intermediate_mesh(inner, outer, alpha, method=method)
     io.write_asc(fname, verts, faces)
 

@@ -675,15 +675,17 @@ def read_txt(fname, dtype=float, comment='#', delimiter=None, skiprows=0, return
         return x
 
 
-def read_asc(fname):
+def read_asc(fname, dtype=None):
     '''Read FreeSurfer/SUMA surface (vertices and faces) in *.asc format.'''
+    if dtype is None:
+        dtype = float
     with open(fname, 'r') as fin:
         lines = fin.readlines()
     n_verts, n_faces = np.int_(lines[1].split())
     # verts = np.vstack(map(lambda line: np.float_(line.split()), lines[2:2+n_verts])) # As slow as np.loadtxt()
     # verts = np.float_(''.join(lines[2:2+n_verts]).split()).reshape(-1,4) # Much faster
     verts = np.fromiter(itertools.chain.from_iterable(
-        map(lambda line: line.split()[:3], lines[2:2+n_verts])), dtype=float).reshape(-1,3)
+        map(lambda line: line.split()[:3], lines[2:2+n_verts])), dtype=dtype).reshape(-1,3)
     faces = np.fromiter(itertools.chain.from_iterable(
         map(lambda line: line.split()[:3], lines[2+n_verts:2+n_verts+n_faces])), dtype=int).reshape(-1,3)
     return verts, faces

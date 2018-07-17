@@ -1,7 +1,8 @@
 #!/usr/bin/env ipython_wrapper
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import argparse, os
+import argparse, textwrap, os
+import multiprocessing
 from os import path
 import numpy as np
 
@@ -11,11 +12,59 @@ if __name__ == '__main__':
     from mripy import afni, utils, io, surface
     timer = script_utils.ScriptTimer()
 
-    parser = argparse.ArgumentParser(description='Compute cortical depth.')
+    parser = argparse.ArgumentParser(description='Compute cortical depth for each voxel.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent('''
+        Cortical depth
+        --------------
+        Depth values are normalized by cortical thickness, with white/gray border at 0 
+        and gray/CSF border at 1. Negative depth means at least half of the voxel locates
+        in the white matter, whereas depth greater than 1 means at least half of the voxel
+        locates in the CSF.
+
+        Depth flavors
+        -------------
+        There are two definitions or flavors of normalized cortical depth:
+        1. "equivolume" (this is the default flavor)
+
+        2. "equidistance"
+
+        Estimation methods
+        ------------------
+        1. "volume_weighted"
+           This is the default method, providing not only a depth value for each voxel
+           but also a weight vector that estimates the contribution (volume fraction)
+           of each sublaminae. There are 14 laminae linearly spanning from -0.2 to 1.2.
+        
+        2. "center_weighted"
+           This is the fastest method and less hunger for memeory, although it cannot 
+           provide weight estiamtion. 
+
+        3. "3dSurfMask"
+           This method is provided for comparison purpose only. It is much slower than 
+           previous methods, and only support equidistance flavor.
+
+        Examples
+        --------
+        1) Compute equivolume depth and weight for each voxel in mean_epi+orig, assuming
+        SUMA and SurfVol can be found at their default locations. 
+        $ mripy_compute_depth.ipy -b mean_epi+orig
+
+        There will be two outputs, naming after the base image: 
+        mean_epi.depth+orig for depth and mean_epi.weight+orig for weight. 
+        4 parallal jobs are spawned by default, and significant memory usage are expected 
+        for hires base image (e.g., 0.4 mm iso). If you run out of physical memory, 
+        consider reducing the number of simultaneous jobs, or try the "center_weighted" method.
+
+        2) Compute equivolume depth for hires base image, using high density surface mesh
+        and "center_weighted" method, with 14 simultaneous jobs.
+        $ mripy_compute_depth.ipy -b mean_epi_resam+orig -s ../SUMA.hd -m center_weighted -j 14
+        '''))
     parser.add_argument('-b', '--base', required=True, help='grid parent')
     parser.add_argument('-s', '--suma', default='../SUMA', help='SUMA directory (default ../SUMA)')
     parser.add_argument('-v', '--surf_vol', default='SurfVol_Alnd_Exp+orig', help='SurfVol (default SurfVol_Alnd_Exp+orig)')
-    parser.add_argument('-m', '--method', default='equivolume', help='method for depth estimation ([equivolume]|3dSurfMask)')
+    parser.add_argument('-m', '--method', default='volume_weighted', help='method for depth estimation ([volume_weighted]|center_weighted|3dSurfMask)')
+    parser.add_argument('-f', '--flavor', default='equivolume', help='flavor of depth estimation ([equivolume]|equidistance)')
     parser.add_argument('-o', '-prefix', '--prefix', default=None, help='output prefix (default <base>.depth)')
     parser.add_argument('-j', '--jobs', type=int, default=4, help='number of parallel processes: [4]|8|12|...')
     args = parser.parse_args()
@@ -44,19 +93,19 @@ if __name__ == '__main__':
                         '-sv', args.surf_vol,
                         '-grid_parent', '{in_file}',
                         '-fill_method', 'FAST',
-                        '-prefix', '{depth_out}', '-overwrite'], 
-                        in_file=args.base, prefix='.'.join(('tmp', depth_out, hemi, surface)), 
-                        n_jobs=n_chunks, schema=[1,1,n_chunks], fname_mapper={'_out': '_out.m'})
+                        '-prefix', '{prefix}', '-overwrite'], 
+                        in_file=args.base, prefix=path.join(temp_folder, '.'.join(('tmp', depth_out, hemi, surface))), 
+                        n_jobs=n_chunks, schema=[1,1,n_chunks], fname_mapper={'_out': '_out.d'})
             pc.wait()
             for hemi in hemis:
                 # Calculate relative depth for the whole volume
-                !3dcalc -a tmp.{depth_out}.{hemi}.smoothwm+orig -b tmp.{depth_out}.{hemi}.pial+orig \
-                    -expr '-a/(b-a)' -prefix tmp.{depth_out}.{hemi} -overwrite
+                !3dcalc -a {temp_folder}/tmp.{depth_out}.{hemi}.smoothwm+orig -b {temp_folder}/tmp.{depth_out}.{hemi}.pial+orig \
+                    -expr '-a/(b-a)' -prefix {temp_folder}/tmp.{depth_out}.{hemi} -overwrite
                 # Keep only near-surface voxels
-                !3dcalc -a tmp.{depth_out}.{hemi}+orig -b tmp.{depth_out}.{hemi}.pial+orig \
+                !3dcalc -a {temp_folder}/tmp.{depth_out}.{hemi}+orig -b {temp_folder}/tmp.{depth_out}.{hemi}.pial+orig \
                     -expr 'a*step(a+0.5)*step(1.5-a)*step(5-b)*step(b+1)' \
-                    -prefix tmp.{depth_out}.{hemi} -overwrite
-        elif args.method.lower() == 'equivolume':
+                    -prefix {temp_folder}/tmp.{depth_out}.{hemi} -overwrite
+        elif args.method.lower() == 'volume_weighted':
             depths = np.r_[np.linspace(-0.2, 1.1, 14)+0.05]
             alphas = np.r_[np.linspace(-0.2, 1.2, 15)] # Native jobs = 14~15 (so jobs=8 is good)
             n_laminae = len(depths)
@@ -72,7 +121,7 @@ if __name__ == '__main__':
                 for k, alpha in enumerate(alphas):
                     lamina_names[hemi].append('{0}.L{1:02d}.asc'.format(hemi, k))
                     lamina_files[hemi].append(path.join(temp_folder, lamina_names[hemi][k]))
-                    pc.check_call(surface.intermediate_asc, lamina_files[hemi][k], inner[hemi], outer[hemi], alpha, method='equivolume_inside')
+                    pc.check_call(surface.intermediate_asc, lamina_files[hemi][k], inner[hemi], outer[hemi], alpha, method=args.flavor)
             pc.wait()
             # Generate spec files
             lamina_spec = {hemi: path.join(temp_folder, 'lamina_{0}.spec'.format(hemi)) for hemi in hemis}
@@ -157,16 +206,29 @@ if __name__ == '__main__':
             pc.wait()
             for hemi in hemis:
                 pc.check_call(f'''
-                    3dTstat -sum -prefix tmp.{depth_out}.{hemi} -overwrite "{' '.join(depth_files[hemi])}";
-                    3dTcat -prefix tmp.{weight_out}.{hemi} -overwrite "{' '.join(weight_files[hemi])}";
+                    3dTstat -sum -prefix {temp_folder}/tmp.{depth_out}.{hemi} -overwrite "{' '.join(depth_files[hemi])}";
+                    3dTcat -prefix {temp_folder}/tmp.{weight_out}.{hemi} -overwrite "{' '.join(weight_files[hemi])}";
                     ''', shell=True)
             pc.wait()
-        
+            # Combine left and right hemisphere for weight
+            !3dcalc -l {temp_folder}/tmp.{weight_out}.lh+orig -r {temp_folder}/tmp.{weight_out}.rh+orig \
+                -expr 'max(l,r)' -prefix {weight_out} -overwrite
+        elif args.method.lower() == 'center_weighted':
+            lock = multiprocessing.Lock()
+            mask = io.Mask(args.base, kind='full')
+            def compute_depth(prefix, inner, outer):
+                d = surface.compute_voxel_depth(mask.xyz, inner, outer, args.surf_vol, method=args.flavor, n_jobs=args.jobs, lock=lock)
+                d[(d<=-0.2)|(d>=1.2)] = 0
+                mask.undump(prefix, d)
+            for hemi in hemis:
+                pc.check_call(compute_depth, path.join(temp_folder, 'tmp.{0}.{1}'.format(depth_out, hemi)), 
+                    path.join(args.suma, '{0}.smoothwm.asc'.format(hemi)),
+                    path.join(args.suma, '{0}.pial.asc'.format(hemi)))
+            pc.wait()
+
         # Combine left and right hemisphere
-        !3dcalc -l tmp.{depth_out}.lh+orig -r tmp.{depth_out}.rh+orig \
+        !3dcalc -l {temp_folder}/tmp.{depth_out}.lh+orig -r {temp_folder}/tmp.{depth_out}.rh+orig \
             -expr 'l+r' -prefix {depth_out} -overwrite
-        !3dcalc -l tmp.{weight_out}.lh+orig -r tmp.{weight_out}.rh+orig \
-            -expr 'max(l,r)' -prefix {weight_out} -overwrite
 
     # Check successful
     if pc.all_successful():
@@ -175,4 +237,4 @@ if __name__ == '__main__':
         print('>> Sorry, but something went wrong in the middle...')
 
     # Remove temp files
-    !rm tmp.*
+    !rm -r {temp_folder}
