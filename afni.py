@@ -190,16 +190,32 @@ def get_S2E_mat(fname, mat='S2E'):
     return np.float_(res.split()).reshape(3,4)
 
 
-def generate_spec(spec_file, surfs, **kwargs):
-    kwargs = dict(dict(type='FS', state=None), **kwargs)
-    surfs = [dict(kwargs, **({'name': surf} if isinstance(surf, six.string_types) else surf)) for surf in surfs]
+def generate_spec(fname, surfs, **kwargs):
+    defaults = dict(dict(type='FS', state=None, anat=None, parent=None), **kwargs)
+    surfs = [dict(defaults, **({'name': surf} if isinstance(surf, six.string_types) else surf)) for surf in surfs]
+    has_smoothwm = np.any([('smoothwm' in surf['name']) for surf in surfs])
+    is_both = np.any([('lh' in surf['name']) for surf in surfs]) and np.any([('rh' in surf['name']) for surf in surfs])
     for surf in surfs:
+        match = re.search(r'([l|r]h)\.(.+)\.asc', surf['name'])
+        surf['hemi'] = match.group(1)
+        surf['surf'] = match.group(2)
+        is_anat = surf['surf'] in ['pial', 'smoothwm', 'white']
         if surf['state'] is None:
-            surf['state'] = re.search(r'[l|r]h\.(.+)\.asc', surf['name']).group(1)
+            if not is_anat and is_both:
+                surf['state'] = '_'.join([surf['surf'], surf['hemi']])
+            else:
+                surf['state'] = surf['surf']
+        if surf['anat'] is None:
+            surf['anat'] = 'Y' if is_anat else 'N'
+        if surf['parent'] is None:
+            if surf['name'] == 'smoothwm' or not has_smoothwm:
+                surf['parent'] = 'SAME'
+            else:
+                surf['parent'] = '.'.join([surf['hemi'], 'smoothwm', 'asc'])
     cmds = []
     for surf in surfs:
-         cmds.extend(['-tsn', surf['type'], surf['state'], surf['name']])
-    subprocess.check_call(['quickspec', '-spec', spec_file, '-overwrite'] + cmds)
+         cmds.extend(['-tsnad', surf['type'], surf['state'], surf['name'], surf['anat'], surf['parent']])
+    subprocess.check_call(['quickspec', '-spec', fname, '-overwrite'] + cmds)
 
 
 def update_afnirc(**kwargs):

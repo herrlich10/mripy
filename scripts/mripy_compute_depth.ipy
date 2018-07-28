@@ -126,7 +126,7 @@ if __name__ == '__main__':
             # Generate spec files
             lamina_spec = {hemi: path.join(temp_folder, 'lamina_{0}.spec'.format(hemi)) for hemi in hemis}
             for hemi in hemis:
-                afni.generate_spec(lamina_spec[hemi], lamina_names[hemi])
+                afni.generate_spec(lamina_spec[hemi], lamina_names[hemi], anat='Y')
             # Project surface to volume
             weight1_files = {}
             for hemi in hemis:

@@ -26,16 +26,22 @@ if __name__ == '__main__':
 
         Examples
         --------
-        1) Convert HCP retinotopy atlas, and interpolate into HD mesh
+        1) Convert HCP retinotopy atlas
+        $ mripy_curv2dset.ipy -s fs_subjects/ZhangP -i benson14
+
+        2) Convert HCP retinotopy atlas, and interpolate into HD mesh
         $ mripy_curv2dset.ipy -s fs_subjects/ZhangP -i benson14 \
             --suma_dir S01/SUMA.hd -m hd.lh.inflated.asc
         '''))
     parser.add_argument('-s', '--subj_dir', required=True, help='')
     parser.add_argument('-i', '--input', required=True, help='')
+    parser.add_argument('--roi', nargs='*', default=[], help='')
     parser.add_argument('--suma_dir', help='')
     parser.add_argument('-m', '--mesh', help='')
     args = parser.parse_args()
     convert_mgz = (args.input == 'benson14')
+    if args.input == 'benson14':
+        args.roi.append('benson14_varea')
     if args.input == 'benson14':
         args.input = ['benson14_angle', 'benson14_eccen', 'benson14_sigma', 'benson14_varea']
     surf_dir = path.join(args.subj_dir, 'surf')
@@ -79,7 +85,11 @@ if __name__ == '__main__':
                 @Align_Centers -base {surf_vol} -dset {nii_file} -no_cp;
                 ''', shell=True)
         pc.wait()
+    # Remove the auto-generated *._shft.1D files in current directory
+    for dset in args.input:
+        !rm {dset}_shft.1D
 
+    # Interpolate surface dset according to HD mesh
     if args.mesh is not None:
         mesh_fmt = afni.substitute_hemi(args.mesh)
         fmesh = {}
@@ -91,6 +101,14 @@ if __name__ == '__main__':
             for dset in args.input:
                 prefix = '{0}.{1}'.format(hemi, dset)
                 niml_file = path.join(suma_dir, '{0}.niml.dset'.format(prefix))
-                out_file = path.join(suma_dir, 'hd.{0}.niml.dset'.format(prefix))
+                out_file = path.join(suma_dir, '{0}.niml.dset'.format(prefix))
                 pc.check_call(surface.interp_dset, niml_file, fmesh[hemi], out_file)
+        pc.wait()
+
+    # Generate SUMA ROI files
+    if args.roi:
+        for hemi in hemis:
+            for roi in args.roi:
+                f_dset = path.join(suma_dir, '{0}.{1}.niml.dset'.format(hemi, roi))
+                pc.check_call(surface.dset2roi, f_dset)
         pc.wait()

@@ -1,14 +1,53 @@
 #!/usr/bin/env ipython --
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
+import argparse, os, shutil
 from os import path
 
 
 if __name__ == '__main__':
     import script_utils # Append mripy to Python path
-    from mripy import afni, utils
+    from mripy import afni, utils, io, surface
     timer = script_utils.ScriptTimer()
     
-    hemi = 'lh'
-    # SurfMesh is useless because...
-    # !SurfMesh -i SUMA/lh.smoothwm.asc -o hd.lh.smoothwmasc -edges 2
+    parser = argparse.ArgumentParser(description='Create depth mask from surface ROI.')
+    parser.add_argument('-i', '--input', default='../SUMA', help='input SUMA directory (default ../SUMA)')
+    parser.add_argument('-o', '--output', default=None, help='output SUMA.hd directory (default ../SUMA.hd)')
+    parser.add_argument('-f', '--surf', nargs='+', default=['pial', 'smoothwm', 'inflated'], help='surfaces that need to be interpolated')
+    parser.add_argument('-p', '--power', type=int, default=2, help='number of iterations for face quadrisection (default 2, i.e., 16x denser)')
+    parser.add_argument('-j', '--jobs', type=int, default=2, help='number of parallel processes (default 2)')
+    args = parser.parse_args()
+    if args.output is None:
+        args.output = path.join(path.dirname(args.input), 'SUMA.hd')
+    if not path.exists(args.output):
+        os.makedirs(args.output)
+    else:
+        raise RuntimeError(f'"{args.output}" already exists! Quit for now...')
+
+    # Interpolate surface meshes
+    def interp_mesh(fin, fout):
+        print(f'processing {fin}...')
+        verts, faces = io.read_asc(fin)
+        verts, faces = surface.quadruple_mesh(verts, faces, power=args.power)
+        io.write_asc(fout, verts, faces)
+    pc = utils.PooledCaller(pool_size=args.jobs)
+    for surf in args.surf:
+        for hemi in ['lh', 'rh']:
+            fname = f'{hemi}.{surf}.asc'
+            pc.check_call(interp_mesh, path.join(args.input, fname), path.join(args.output, fname))
+    pc.wait()
+
+    # Create spec files
+    suma_subj = afni.get_suma_subj(args.input)
+    for hemi in ['lh', 'rh']:
+        afni.generate_spec(path.join(args.output, f'{suma_subj}_{hemi}.spec'), [f'{hemi}.{surf}.asc' for surf in args.surf])
+    afni.generate_spec(path.join(args.output, f'{suma_subj}_both.spec'), [f'{hemi}.{surf}.asc' for surf in args.surf for hemi in ['lh', 'rh']])
+    afni.generate_spec(path.join(args.output, f'{suma_subj}_view.spec'), [f'{hemi}.{surf}.asc' for surf in ['smoothwm', 'inflated'] for hemi in ['lh', 'rh']])
+
+    # Copy SurfVol from SUMA directory
+    !cp {args.input}/{suma_subj}_SurfVol+orig.* {args.output}
+
+    # Create viewing scripts for afni and suma
+    with open(f'{args.output}/run_suma_hd', 'w') as fout:
+        fout.write('afni -niml &\n')
+        fout.write(f'suma -spec {suma_subj}_view.spec -sv {suma_subj}_SurfVol+orig &\n')

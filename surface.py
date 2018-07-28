@@ -272,6 +272,23 @@ def intermediate_asc(fname, inner, outer, alpha, method='equivolume'):
     io.write_asc(fname, verts, faces)
 
 
+def dset2roi(f_dset, f_roi=None, colors=None):
+    '''
+    ROI number starts from 1 (nodes with data==0 are ignored).
+    See also: FSread_annot
+    '''
+    if f_roi is None:
+        f_roi = '.'.join(f_dset.split('.')[:-2] + ['1D', 'roi'])
+    nodes, data = io.read_niml_bin_nodes(f_dset)
+    nodes = nodes[data!=0]
+    data = data[data!=0].astype(int)
+    if colors is None:
+        np.savetxt(f_roi, np.c_[nodes, data], fmt='%d')
+    else:
+        np.savetxt(f_roi, np.c_[nodes, data, colors[(data-1)%len(colors)]], 
+            fmt=['%d', '%d', '%.6f', '%.6f', '%.6f'])
+
+
 class Surface(object):
     def __init__(self, suma_dir, surf_vol=None):
         self.surf_dir = suma_dir
