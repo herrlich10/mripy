@@ -19,5 +19,6 @@ if __name__ == '__main__':
     for hemi in hemis:
         fi = '{0}.{1}.niml.roi'.format(args.input, hemi)
         fo = '{0}.{1}.niml.dset'.format(prefix, hemi)
-        !rm {fo}
-        !ROI2dataset -prefix {fo} -of ni_bi -input {fi}
+        if path.exists(fi):
+            !rm {fo}
+            !ROI2dataset -prefix {fo} -of ni_bi -input {fi}

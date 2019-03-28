@@ -11,21 +11,21 @@ from . import six
 
 # Test afni installation
 has_afni = bool(re.search('version', subprocess.check_output(['afni', '-ver']).decode('utf-8'), re.IGNORECASE))
-# Find afni path
-config_dir = path.expanduser('~/.mripy')
-if not path.exists(config_dir):
-    os.makedirs(config_dir)
-if has_afni:
-    config_file = path.join(config_dir, 'afni_path')
-    if path.exists(config_file):
-        with open(config_file, 'r') as f:
-            afni_path = f.readline()
-    else:
-        afni_path = subprocess.check_output('find ~ -iregex ".*/abin"', shell=True).decode('utf-8').split('\n')[0]
-        with open(config_file, 'w') as f:
-            f.write(afni_path)
-else:
-    afni_path = ''
+# # Find afni path
+# config_dir = path.expanduser('~/.mripy')
+# if not path.exists(config_dir):
+#     os.makedirs(config_dir)
+# if has_afni:
+#     config_file = path.join(config_dir, 'afni_path')
+#     if path.exists(config_file):
+#         with open(config_file, 'r') as f:
+#             afni_path = f.readline()
+#     else:
+#         afni_path = subprocess.check_output('find ~ -iregex ".*/abin"', shell=True).decode('utf-8').split('\n')[0]
+#         with open(config_file, 'w') as f:
+#             f.write(afni_path)
+# else:
+#     afni_path = ''
 
 
 def filter_output(lines, tags=None, pattern=None):
@@ -74,6 +74,36 @@ def check_output(cmd, tags=None, pattern=None, verbose=0, **kwargs):
         for line in lines:
             print(line, file=sys.stderr if line.startswith('*') else sys.stdout)
     return lines
+
+
+def call(cmd):
+    if isinstance(cmd, six.string_types):
+        cmd = shlex.split(cmd) # Split by space, preserving quoted substrings
+    cmd_str = ' '.join(cmd)
+    print('>>', cmd_str)
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=False)
+    for line in iter(p.stdout.readline, b''): # The 2nd argument is sentinel character
+        print(line.decode('utf-8'), end='')
+    p.stdout.close() # Notify the child process that the PIPE has been broken
+    if p.wait():
+        raise RuntimeError(f'Error occurs when executing the following command (returncode={p.returncode}):\n{cmd_str}') 
+
+
+def split_out_file(out_file, with_path=False):
+    out_dir, out_name = path.split(out_file)
+    match = re.match('(.+)(.nii|.nii.gz)$', out_name)
+    if match:
+        prefix, ext = match.groups()
+    else:
+        match = re.match('(.+)(\+(?:orig|tlrc)(?:.|.HEAD|.BRIK)?)$', out_name)
+        if match:
+            prefix, ext = match.groups()
+        else:
+            prefix, ext = out_name, '+orig.HEAD'
+    if with_path:
+        return path.join(out_dir, prefix)
+    else:
+        return (out_dir+'/' if out_dir else ''), prefix, ext
 
 
 def get_prefix(fname, with_path=False):

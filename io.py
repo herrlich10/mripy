@@ -129,6 +129,7 @@ def parse_physio_file(fname, date=None):
     # fs = {'ecg': 400, 'ext': 200, 'puls': 50, 'resp': 50}
     fs = {'ecg': 398.4, 'ext': 199.20, 'puls': 49.80, 'resp': 49.80}
     trig_value = 5000
+    tag_values = np.r_[trig_value, 6000]
     info = _parse_physio_raw(fname)
     if info is None:
         return None
@@ -139,7 +140,8 @@ def parse_physio_file(fname, date=None):
     x = info['rawdata']
     if ch != 'ecg':
         # y = x.copy()
-        y = x[x!=trig_value] # Strip trigger value (5000)
+        # y = x[x!=trig_value] # Strip trigger value (5000)
+        y = x[~np.in1d(x, tag_values)] # Strip all tag values (5000, 6000, ...)
         trig = np.zeros_like(x)
         trig[np.nonzero(x==trig_value)[0]-1] = 1
         trig = trig[x!=trig_value]
@@ -150,9 +152,14 @@ def parse_physio_file(fname, date=None):
     info['trig'] = trig
     info['t'] = info['start'] + np.arange(len(y)) / fs[ch]
     try:
+        assert(max(y) < 4096) # Valid data range is [0, 4095]
+    except AssertionError as err:
+        print('\n** Invalid data value detected: {0}'.format(np.unique(y[y>4095])))
+        raise err
+    try:
         assert(np.abs(info['t'][-1]-info['stop'])<2/info['fs']) # Allow 1 sampleish error
     except AssertionError as err:
-        print('{0}: Last sample = {1}, stop = {2}, error = {3}'.format(
+        print('\n** {0}: Last sample = {1}, stop = {2}, error = {3}'.format(
             info['channel'], info['t'][-1], info['stop'], info['t'][-1]-info['stop']))
         raise err
     return info
@@ -248,7 +255,7 @@ def parse_dicom_header(fname, fields=None):
             k += 1
             if match:
                 header['AcquisitionTime'] = match.group(1) # This marks the start of a volume
-                header['volume_time'] = hms2dt(header['AcquisitionTime'], date=header['AcquisitionDate'], timestamp=True)
+                header['timestamp'] = hms2dt(header['AcquisitionTime'], date=header['AcquisitionDate'], timestamp=True)
                 break
         while True:
             match = re.search(r'ACQ Scanning Sequence//(.+)', lines[k])
@@ -391,6 +398,8 @@ def parse_dicom_header(fname, fields=None):
 SERIES_PATTERN = r'.+?\.(\d{4})\.' # Capture series number
 MULTI_SERIES_PATTERN = r'.+?\.(\d{4})\.(\d{4}).+(\d{8,})' # Capture series number, slice number, uid
 MULTI_SERIES_PATTERN2 = r'.+?\.(\d{4})\.(\d{4}).+(\d{5,}\.\d{8,})' # Capture series number, slice number, uid (5-6.8-9)
+# MULTI_SERIES_PATTERN3 = r'.+?\.(\d{4})\.(\d{4}).+(\d{5,})\.\d{5,}' # Capture series number, slice number, uid (5-6).5-9
+MULTI_SERIES_PATTERN3 = r'.+?\.(\d{4})\.(\d{4}).+(\d+)\.\d+' # Capture series number, slice number, uid
 
 def _sort_multi_series(files):
     '''
@@ -400,7 +409,7 @@ def _sort_multi_series(files):
     timestamps = []
     infos = []
     for f in files:
-        match = re.search(MULTI_SERIES_PATTERN2, f)
+        match = re.search(MULTI_SERIES_PATTERN3, f)
         # infos.append((f, int(match.group(2)), int(match.group(3))))
         infos.append((f, int(match.group(2)), float(match.group(3))))
     prev_slice = sys.maxsize
@@ -465,7 +474,7 @@ def sort_dicom_series(folder, series_pattern=SERIES_PATTERN):
     return studies
 
 
-def filter_dicom_files(files, series_numbers=None, instance_numbers=None, series_pattern=MULTI_SERIES_PATTERN):
+def filter_dicom_files(files, series_numbers=None, instance_numbers=None, series_pattern=MULTI_SERIES_PATTERN3):
     if isinstance(files, six.string_types) and path.isdir(files):
         files = glob.glob(path.join(files, '*.IMA'))
     if not isinstance(series_numbers, collections.Iterable):
@@ -520,7 +529,10 @@ def pares_slice_order(dicom_files):
     return order, t
 
 
-def parse_series_info(fname, volume_time=False, shift_time=None, series_pattern=SERIES_PATTERN, fields=None):
+def parse_series_info(fname, timestamp=False, shift_time=None, series_pattern=SERIES_PATTERN, fields=None, parser=None):
+    '''
+    Potential bug: `dicom.parse_dicom_header` doesn't support `fields` as kwargs 
+    '''
     if isinstance(fname, six.string_types): # A single file or a folder
         if path.isdir(fname):
             # Assume there is only one series in the folder, so that we only need to consider the first file.
@@ -533,16 +545,18 @@ def parse_series_info(fname, volume_time=False, shift_time=None, series_pattern=
     else: # A list of files (e.g., as provided by sort_dicom_series)
         files = fname
         findex = 0
+    if parser is None:
+        parser = parse_dicom_header
     info = collections.OrderedDict()
-    if volume_time:
+    if timestamp:
         parse_list = range(len(files))
     else:
         parse_list = [0, -1]
-    headers = [parse_dicom_header(files[k], fields=fields) for k in parse_list]
+    headers = [parser(files[k], fields=fields) for k in parse_list]
     if headers[0]['StudyID'] != headers[-1]['StudyID']:
         # There are more than one series (from different studies) sharing the same series number
         if parse_list == [0, -1]:
-            headers = [headers[0]] + [parse_dicom_header(f) for f in files[1:-1]] + [headers[-1]]
+            headers = [headers[0]] + [parser(f) for f in files[1:-1]] + [headers[-1]]
         if findex is None:
             findex = files.index(fname)
         selected = [k for k, header in enumerate(headers) if header['StudyID']==headers[findex]['StudyID']]
@@ -550,8 +564,8 @@ def parse_series_info(fname, volume_time=False, shift_time=None, series_pattern=
         headers = [headers[k] for k in selected]
     info.update(headers[0])
     info['date'] = info['AcquisitionDate']
-    info['first'] = headers[0]['volume_time']
-    info['last'] = headers[-1]['volume_time']
+    info['first'] = headers[0]['timestamp']
+    info['last'] = headers[-1]['timestamp']
     info['n_volumes'] = headers[-1]['AcquisitionNumber'] - headers[0]['AcquisitionNumber'] + 1
     info['TR'] = (info['last']-info['first'])/(info['n_volumes']-1) if info['n_volumes'] > 1 else None
     if shift_time == 'CMRR':
@@ -566,8 +580,8 @@ def parse_series_info(fname, volume_time=False, shift_time=None, series_pattern=
     info['last'] += shift_time
     info['start'] = info['first']
     info['stop'] = (info['last'] + info['TR']) if info['TR'] is not None else info['last']
-    if volume_time:
-        info['t'] = np.array([header['volume_time'] for header in headers]) + shift_time
+    if timestamp:
+        info['t'] = np.array([header['timestamp'] for header in headers]) + shift_time
     info['files'] = [path.realpath(f) for f in files]
     info['headers'] = headers
     return info
@@ -643,13 +657,25 @@ def write_nii(fname, vol, base_img=None):
 
 
 def read_afni(fname, remove_nii=True, return_img=False):
-    match = re.match('(.+)\+', fname)
-    nii_fname = match.group(1) + '.nii'
-    subprocess.check_call(['3dAFNItoNIFTI', '-prefix', nii_fname, fname])
-    res = read_nii(nii_fname, return_img)
-    if remove_nii:
-        os.remove(nii_fname)
-    return res
+    try:
+        if fname[-5:] in ['.HEAD', '.BRIK']:
+            pass
+        elif fname[-1] == '.':
+            fname = fname + 'HEAD'
+        else:
+            fname = fname + '.HEAD'
+        img = nibabel.load(fname) # Start from nibabel 2.3.0 (with brikhead.py)
+        vol = img.get_data().squeeze()
+        return (vol, img) if return_img else vol
+    except nibabel.filebasedimages.ImageFileError:
+        print('*+ WARNING: Fail to open "{0}" with nibabel, fallback to 3dAFNItoNIFTI'.format(fname)) 
+        match = re.match('(.+)\+', fname)
+        nii_fname = match.group(1) + '.nii'
+        subprocess.check_call(['3dAFNItoNIFTI', '-prefix', nii_fname, fname])
+        res = read_nii(nii_fname, return_img)
+        if remove_nii:
+            os.remove(nii_fname)
+        return res
 
 
 def write_afni(prefix, vol, base_img=None):
@@ -691,9 +717,46 @@ def read_asc(fname, dtype=None):
     return verts, faces
 
 
+def read_patch_asc(fname, dtype=None, index_type='multimap'):
+    '''
+    Read FreeSurfer/SUMA patch (noncontiguous vertices and faces) in *.asc format.
+    
+    index_type : str
+        - "raw" or "array"
+        - "map" or "dict"
+        - "multimap" or "func"
+    '''
+    if dtype is None:
+        dtype = float
+    with open(fname, 'r') as fin:
+        lines = fin.readlines()
+    n_verts, n_faces = np.int_(lines[1].split())
+    # verts = np.vstack(map(lambda line: np.float_(line.split()), lines[2:2+n_verts])) # As slow as np.loadtxt()
+    # verts = np.float_(''.join(lines[2:2+n_verts]).split()).reshape(-1,4) # Much faster
+    verts = np.fromiter(itertools.chain.from_iterable(
+        map(lambda line: line.split()[:3], lines[2+1:2+n_verts*2:2])), dtype=dtype).reshape(-1,3)
+    faces = np.fromiter(itertools.chain.from_iterable(
+        map(lambda line: line.split()[:3], lines[2+1+n_verts*2:2+n_verts*2+n_faces*2:2])), dtype=int).reshape(-1,3)
+    vidx = np.fromiter(itertools.chain.from_iterable(
+        map(lambda line: line.split('=')[-1:], lines[2:2+n_verts*2:2])), dtype=int)
+    fidx = np.fromiter(itertools.chain.from_iterable(
+        map(lambda line: line.split('=')[-1:], lines[2+n_verts*2:2+n_verts*2+n_faces*2:2])), dtype=int)
+    vmap = {vidx[k]: k for k in range(n_verts)}
+    fmap = {fidx[k]: k for k in range(n_faces)}
+    if index_type in ['raw', 'array']:
+        pass
+    if index_type in ['map', 'dict']:
+        vidx = vmap
+        fidx = fmap
+    elif index_type in ['multimap', 'func']:
+        vidx = lambda K: vmap[K] if np.isscalar(K) else [vmap[k] for k in K]
+        fidx = lambda K: fmap[K] if np.isscalar(K) else [fmap[k] for k in K]
+    return verts, faces, vidx, fidx
+
+
 def write_asc(fname, verts, faces):
-    with open(fname, 'w') as fout:
-        fout.write('#!ascii version of surface mesh saved by mripy\n')
+    with open(fname, 'wb') as fout: # Binary mode is more compatible with older Python...
+        fout.write('#!ascii version of surface mesh saved by mripy\n'.encode('ascii'))
         np.savetxt(fout, [[len(verts), len(faces)]], fmt='%d')
         np.savetxt(fout, np.c_[verts, np.zeros(len(verts))], fmt=['%.6f', '%.6f', '%.6f', '%d'])
         np.savetxt(fout, np.c_[faces, np.zeros(len(faces))], fmt='%d')    
@@ -731,10 +794,34 @@ def read_niml_dset(fname, tags=None, as_asc=True, return_type='list'):
         return root
 
 
+# def read_niml_bin_nodes(fname):
+#     '''
+#     Read "Node Bucket" (node indices and values) from niml (binary) dataset.
+#     This implementation is experimental for one-column dset only.
+#     '''
+#     with open(fname, 'rb') as fin:
+#         s = fin.read()
+#         data = []
+#         for tag in NIML_DSET_CORE_TAGS:
+#             pattern = '<{0}(.*?)>(.*?)</{0}>'.format(tag)
+#             match = re.search(bytes(pattern, encoding='utf-8'), s, re.DOTALL)
+#             if match is not None:
+#                 # attrs = match.group(1).decode('utf-8').split()
+#                 # attrs = {k: v[1:-1] for k, v in (attr.split('=') for attr in attrs)}
+#                 attrs = shlex.split(match.group(1).decode('utf-8')) # Don't split quoted string
+#                 attrs = dict(attr.split('=') for attr in attrs)
+#                 x = np.frombuffer(match.group(2), dtype=attrs['ni_type']+'32')
+#                 data.append(x.reshape(np.int_(attrs['ni_dimen'])))
+#             else:
+#                 data.append(None)
+#         if data[0] is None: # Non-sparse dataset
+#             data[0] = np.arange(data[1].shape[0])
+#         return data[0], data[1]
+
+
 def read_niml_bin_nodes(fname):
     '''
     Read "Node Bucket" (node indices and values) from niml (binary) dataset.
-    This implementation is experimental for one-column dset only.
     '''
     with open(fname, 'rb') as fin:
         s = fin.read()
@@ -743,23 +830,65 @@ def read_niml_bin_nodes(fname):
             pattern = '<{0}(.*?)>(.*?)</{0}>'.format(tag)
             match = re.search(bytes(pattern, encoding='utf-8'), s, re.DOTALL)
             if match is not None:
-                # attrs = match.group(1).decode('utf-8').split()
-                # attrs = {k: v[1:-1] for k, v in (attr.split('=') for attr in attrs)}
                 attrs = shlex.split(match.group(1).decode('utf-8')) # Don't split quoted string
                 attrs = dict(attr.split('=') for attr in attrs)
-                x = np.frombuffer(match.group(2), dtype=attrs['ni_type']+'32')
-                data.append(x.reshape(np.int_(attrs['ni_dimen'])))
+                if '*' in attrs['ni_type']: # Multi-colume dataset
+                    n, t = attrs['ni_type'].split('*')
+                    attrs['n_columes'] = int(n)
+                    attrs['dtype'] = t+'32'
+                else:
+                    attrs['n_columes'] = int(1)
+                    attrs['dtype'] = attrs['ni_type']+'32'
+                x = np.frombuffer(match.group(2), dtype=attrs['dtype'])
+                data.append(x.reshape(np.int_([attrs['ni_dimen'], attrs['n_columes']])))
             else:
                 data.append(None)
         if data[0] is None: # Non-sparse dataset
             data[0] = np.arange(data[1].shape[0])
-        return data[0], data[1]
+        return data[0].squeeze(), data[1].squeeze()
+
+
+# def write_niml_bin_nodes(fname, idx, val):
+#     '''
+#     Write "Node Bucket" (node indices and values) as niml (binary) dataset.
+#     This implementation is experimental for one-column dset only.
+
+#     References
+#     ----------
+#     [1] https://afni.nimh.nih.gov/afni/community/board/read.php?1,60396,60399#msg-60399
+#     [2] After some trial-and-error, the following components are required:
+#         self_idcode, COLMS_RANGE, COLMS_TYPE (tell suma how to interpret val), 
+#         no whitespace between opening tag and binary data.
+#     '''
+#     with open(fname, 'wb') as fout:
+#         # AFNI_dataset
+#         fout.write('<AFNI_dataset dset_type="Node_Bucket" self_idcode="{0}" \
+#             ni_form="ni_group">\n'.format(generate_afni_idcode()).encode('utf-8'))
+#         # COLMS_RANGE
+#         fout.write('<AFNI_atr ni_type="String" ni_dimen="1" atr_name="COLMS_RANGE">\
+#             "{0} {1} {2} {3}"</AFNI_atr>\n'.format(np.min(val), np.max(val), 
+#             idx[np.argmin(val)], idx[np.argmax(val)]).encode('utf-8'))
+#         # COLMS_TYPE
+#         col_types = {'int': 'Node_Index_Label', 'float': 'Generic_Float'}
+#         fout.write('<AFNI_atr ni_type="String" ni_dimen="1" atr_name="COLMS_TYPE">\
+#             "{0}"</AFNI_atr>\n'.format(col_types[get_ni_type(val)]).encode('utf-8'))
+#         # INDEX_LIST
+#         # Important: There should not be any \n after the opening tag for the binary data!
+#         fout.write('<INDEX_LIST ni_form="binary.lsbfirst" ni_type="int" ni_dimen="{0}" \
+#             data_type="Node_Bucket_node_indices">'.format(len(idx)).encode('utf-8'))
+#         fout.write(idx.astype('int32').tobytes())
+#         fout.write(b'</INDEX_LIST>\n')
+#         # SPARSE_DATA
+#         fout.write('<SPARSE_DATA ni_form="binary.lsbfirst" ni_type="{0}" ni_dimen="{1}" \
+#             data_type="Node_Bucket_data">'.format(get_ni_type(val), len(val)).encode('utf-8'))
+#         fout.write(val.astype(get_ni_type(val)+'32').tobytes())
+#         fout.write(b'</SPARSE_DATA>\n')
+#         fout.write(b'</AFNI_dataset>\n')
 
 
 def write_niml_bin_nodes(fname, idx, val):
     '''
     Write "Node Bucket" (node indices and values) as niml (binary) dataset.
-    This implementation is experimental for one-column dset only.
 
     References
     ----------
@@ -768,18 +897,25 @@ def write_niml_bin_nodes(fname, idx, val):
         self_idcode, COLMS_RANGE, COLMS_TYPE (tell suma how to interpret val), 
         no whitespace between opening tag and binary data.
     '''
+    idx = np.atleast_1d(idx.squeeze())
+    val = np.atleast_2d(val)
+    if val.shape[0] == 1 and val.shape[1] == len(idx):
+        val = val.T
+    n_columes = val.shape[1]
     with open(fname, 'wb') as fout:
         # AFNI_dataset
         fout.write('<AFNI_dataset dset_type="Node_Bucket" self_idcode="{0}" \
             ni_form="ni_group">\n'.format(generate_afni_idcode()).encode('utf-8'))
         # COLMS_RANGE
+        colms_range = ';'.join(['{0} {1} {2} {3}'.format(np.min(val[:,k]), np.max(val[:,k]), 
+            idx[np.argmin(val[:,k])], idx[np.argmax(val[:,k])]) for k in range(n_columes)])
         fout.write('<AFNI_atr ni_type="String" ni_dimen="1" atr_name="COLMS_RANGE">\
-            "{0} {1} {2} {3}"</AFNI_atr>\n'.format(np.min(val), np.max(val), 
-            idx[np.argmin(val)], idx[np.argmax(val)]).encode('utf-8'))
+            "{0}"</AFNI_atr>\n'.format(colms_range).encode('utf-8'))
         # COLMS_TYPE
         col_types = {'int': 'Node_Index_Label', 'float': 'Generic_Float'}
+        colms_type = ';'.join(['{0}'.format(col_types[get_ni_type(val[:,k])]) for k in range(n_columes)])
         fout.write('<AFNI_atr ni_type="String" ni_dimen="1" atr_name="COLMS_TYPE">\
-            "{0}"</AFNI_atr>\n'.format(col_types[get_ni_type(val)]).encode('utf-8'))
+            "{0}"</AFNI_atr>\n'.format(colms_type).encode('utf-8'))
         # INDEX_LIST
         # Important: There should not be any \n after the opening tag for the binary data!
         fout.write('<INDEX_LIST ni_form="binary.lsbfirst" ni_type="int" ni_dimen="{0}" \
@@ -789,7 +925,7 @@ def write_niml_bin_nodes(fname, idx, val):
         # SPARSE_DATA
         fout.write('<SPARSE_DATA ni_form="binary.lsbfirst" ni_type="{0}" ni_dimen="{1}" \
             data_type="Node_Bucket_data">'.format(get_ni_type(val), len(val)).encode('utf-8'))
-        fout.write(val.astype(get_ni_type(val)+'32').tobytes())
+        fout.write(val.astype(get_ni_type(val[:,0])+'32').tobytes())
         fout.write(b'</SPARSE_DATA>\n')
         fout.write(b'</AFNI_dataset>\n')
 
@@ -799,10 +935,11 @@ def generate_afni_idcode():
 
 
 def get_ni_type(x):
+    multiple = '{0}*'.format(x.shape[1]) if x.squeeze().ndim > 1 else ''
     if np.issubdtype(x.dtype, np.integer):
-        return 'int'
+        return multiple+'int'
     elif np.issubdtype(x.dtype, np.floating):
-        return 'float'
+        return multiple+'float'
 
 
 def write_1D_nodes(fname, idx, val):
@@ -957,12 +1094,14 @@ class Mask(object):
         func = (lambda X, Y, Z: (x1<X)&(X<x2) & (y1<Y)&(Y<y2) & (z1<Z)&(Z<z2))
         return self.constrain(func, **kwargs)
 
-    def dump(self, fname):
+    def dump(self, fname, dtype=None):
         files = glob.glob(fname) if isinstance(fname, six.string_types) else fname
         # return np.vstack(read_afni(f).T.flat[self.index] for f in files).T.squeeze() # Cannot handle 4D...
         data = []
         for f in files:
             vol = read_afni(f)
+            if dtype is not None:
+                vol = vol.astype(dtype)
             S = vol.shape
             T = list(range(vol.ndim))
             T[:3] = T[:3][::-1]
@@ -1014,6 +1153,21 @@ class SlabMask(Mask):
     def __init__(self, master, x1=None, x2=None, y1=None, y2=None, z1=None, z2=None):
         Mask.__init__(self, master, kind='full')
         self.slab(x1, x2, y1, y2, z1, z2, inplace=True)
+
+
+def read_affine(fname, oneline=None, sep=None):
+    with open(fname) as fi:
+        lines = fi.readlines()
+    if oneline is not None:
+        mat = np.float_(lines[oneline].split(sep)).reshape(3,4)
+    return mat
+
+
+def write_affnie(fname, mat, sep=None):
+    if sep is None:
+        sep = ' '
+    with open(fname, 'w') as fo:
+        fo.write(sep.join(['%.6f' % x for x in mat.flat]) + '\n')
 
 
 if __name__ == '__main__':

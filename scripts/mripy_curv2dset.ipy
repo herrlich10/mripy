@@ -79,11 +79,11 @@ if __name__ == '__main__':
         for dset in args.input:
             nii_file = path.join(suma_dir, dset+'.nii.gz')
             # Convert and then shift: according to @SUMA_Make_Spec_FS
-            pc.check_call(f'''
+            pc.check_call('''
                 mri_convert --in_type mgz --out_type nii \
-                    {path.join(mri_dir, dset+'.mgz')} {nii_file};
-                @Align_Centers -base {surf_vol} -dset {nii_file} -no_cp;
-                ''', shell=True)
+                    {0} {1};
+                @Align_Centers -base {2} -dset {1} -no_cp;
+                '''.format(path.join(mri_dir, dset+'.mgz'), nii_file, surf_vol), shell=True)
         pc.wait()
     # Remove the auto-generated *._shft.1D files in current directory
     for dset in args.input:

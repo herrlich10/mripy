@@ -25,7 +25,7 @@ def parse_copy(args_copy):
 
 if __name__ == '__main__':
     import script_utils # Append mripy to Python path
-    from mripy import io, utils, afni
+    from mripy import io, utils, afni, dicom
 
     parser = argparse.ArgumentParser(description='Sort raw dicom files and copy them into separate folders.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -46,6 +46,7 @@ if __name__ == '__main__':
     parser.add_argument('-g', '--log', nargs='?', help='write log to (specified) file') # Will be None whether you set -g, unless you specify -g a/new/path
     parser.add_argument('-s', '--select', default=-1, help='select which study to copy, default: last study (-1)')
     parser.add_argument('--pattern', default=io.SERIES_PATTERN, help='regular expression pattern capturing dataset index')
+    parser.add_argument('-m', '--method', default='filename', help='method used to sort dicom files: [filename]|header')
     args = parser.parse_args()
     # args, unknowns = parser.parse_known_args()
     if args.output_dir is None:
@@ -62,9 +63,15 @@ if __name__ == '__main__':
     if args.select > 0:
         args.select -= 1 # From one-based index to zero-based index
     # Sort files into studies of series
-    studies = io.sort_dicom_series(args.input_dir)
+    if args.method == 'filename':
+        studies = io.sort_dicom_series(args.input_dir)
+        dicom_parser = io.parse_dicom_header
+    elif args.method == 'header':
+        print('>> Please wait while extracting headers...')
+        studies = dicom.sort_dicom_series(args.input_dir)
+        dicom_parser = dicom.parse_dicom_header
     if studies is None:
-        print('No dicom file found in "{0}". Use -i to specify input dir.'.format(path.realpath(args.input_dir)))
+        print('>> No dicom file found in "{0}". Use -i to specify input dir.'.format(path.realpath(args.input_dir)))
         exit()
     # List all series in each study
     descriptions = []
@@ -74,7 +81,7 @@ if __name__ == '__main__':
             print('===== study #{0} ====='.format(k+1))
         for sn, files in study.items():
             if afni.has_afni:
-                info = io.parse_series_info(files)
+                info = io.parse_series_info(files, parser=dicom_parser)
                 desc = '{0} ({1}): {2}, {3}{4}'.format(sn,
                     info['n_volumes'] if info['n_volumes']>1 else len(files),
                     info['ProtocolName'],

@@ -27,12 +27,30 @@ import subprocess, multiprocessing, ctypes, time, uuid
 import numpy as np
 
 __author__ = 'herrlich10 <herrlich10@gmail.com>'
-__version__ = '0.1.4'
+__version__ = '0.1.5'
 
+# The following are copied from six
+# =================================
 if sys.version_info[0] == 3:
     string_types = (str,)
 else:
     string_types = (basestring,)
+
+def add_metaclass(metaclass):
+    """Class decorator for creating a class with a metaclass."""
+    def wrapper(cls):
+        orig_vars = cls.__dict__.copy()
+        slots = orig_vars.get('__slots__')
+        if slots is not None:
+            if isinstance(slots, str):
+                slots = [slots]
+            for slots_var in slots:
+                orig_vars.pop(slots_var)
+        orig_vars.pop('__dict__', None)
+        orig_vars.pop('__weakref__', None)
+        return metaclass(cls.__name__, cls.__bases__, orig_vars)
+    return wrapper
+# =================================
 
 
 def cmd_for_exec(cmd, cmd_kws):
@@ -86,11 +104,12 @@ class PooledCaller(object):
     Execute multiple command line programs, as well as python callables, 
     asynchronously and parallelly across a pool of processes.
     '''
-    def __init__(self, pool_size=None):
+    def __init__(self, pool_size=None, verbose=1):
         if pool_size is None:
             self.pool_size = multiprocessing.cpu_count() * 3 // 4
         else:
             self.pool_size = pool_size
+        self.verbose = verbose
         self.ps = []
         self.cmd_queue = []
         self._n_cmds = 0 # Accumulated counter for generating cmd idx
@@ -132,7 +151,8 @@ class PooledCaller(object):
         while len(self.ps) < self.pool_size and len(self.cmd_queue) > 0:
             idx, cmd, args, kwargs = self.cmd_queue.pop(0)
             job = {'idx': idx, 'cmd': cmd_for_disp(cmd)}
-            print('>> job {0}: {1}'.format(idx, job['cmd']))
+            if self.verbose:
+                print('>> job {0}: {1}'.format(idx, job['cmd']))
             if callable(cmd):
                 p = multiprocessing.Process(target=cmd, args=args, kwargs=kwargs)
                 p.start()
@@ -145,7 +165,7 @@ class PooledCaller(object):
             self._pid2job[p.pid] = job
             self._log.append(job)
 
-    def wait(self):
+    def wait(self, pool_size=None):
         '''
         Wait for all jobs in the queue to finish.
         
@@ -154,6 +174,10 @@ class PooledCaller(object):
         codes : list
             The return code of the child process for each job.
         '''
+        if pool_size is not None:
+            # Allow temporally adjust pool_size for current batch of jobs
+            old_size = self.pool_size
+            self.pool_size = pool_size
         self._start_time = time.time()
         while len(self.ps) > 0 or len(self.cmd_queue) > 0:
             # Dispatch jobs if possible
@@ -183,6 +207,8 @@ class PooledCaller(object):
         self._n_cmds = 0
         self._pid2job = {}
         self._return_codes = []
+        if pool_size is not None:
+            self.pool_size = old_size
         return codes
 
     def all_successful(self):
@@ -195,6 +221,7 @@ class PooledCaller(object):
 
     def __call__(self, job_generator):
         # This is similar to the joblib.Parallel signature
+        # e.g. pc(pc.check_call(compute_depth, *args) for ids in pc.batches(len(depths)))
         n_batches = 0
         for _ in job_generator:
             n_batches += 1
@@ -220,7 +247,8 @@ class ArrayWrapper(type):
                     setattr(cls, name, make_descriptor(name))
 
 
-class SharedMemoryArray(object, metaclass=ArrayWrapper):
+@add_metaclass(ArrayWrapper) # Compatibility code from six
+class SharedMemoryArray(object):
     '''
     This class can be used as a usual np.ndarray, but its data buffer
     is allocated in shared memory (under Cached Files in memory monitor), 

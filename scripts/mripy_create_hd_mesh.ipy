@@ -22,32 +22,32 @@ if __name__ == '__main__':
     if not path.exists(args.output):
         os.makedirs(args.output)
     else:
-        raise RuntimeError(f'"{args.output}" already exists! Quit for now...')
+        raise RuntimeError('"{0}" already exists! Quit for now...'.format(args.output))
 
     # Interpolate surface meshes
     def interp_mesh(fin, fout):
-        print(f'processing {fin}...')
+        print('processing {0}...'.format(fin))
         verts, faces = io.read_asc(fin)
         verts, faces = surface.quadruple_mesh(verts, faces, power=args.power)
         io.write_asc(fout, verts, faces)
     pc = utils.PooledCaller(pool_size=args.jobs)
     for surf in args.surf:
         for hemi in ['lh', 'rh']:
-            fname = f'{hemi}.{surf}.asc'
+            fname = '{0}.{1}.asc'.format(hemi, surf)
             pc.check_call(interp_mesh, path.join(args.input, fname), path.join(args.output, fname))
     pc.wait()
 
     # Create spec files
     suma_subj = afni.get_suma_subj(args.input)
     for hemi in ['lh', 'rh']:
-        afni.generate_spec(path.join(args.output, f'{suma_subj}_{hemi}.spec'), [f'{hemi}.{surf}.asc' for surf in args.surf])
-    afni.generate_spec(path.join(args.output, f'{suma_subj}_both.spec'), [f'{hemi}.{surf}.asc' for surf in args.surf for hemi in ['lh', 'rh']])
-    afni.generate_spec(path.join(args.output, f'{suma_subj}_view.spec'), [f'{hemi}.{surf}.asc' for surf in ['smoothwm', 'inflated'] for hemi in ['lh', 'rh']])
+        afni.generate_spec(path.join(args.output, '{0}_{1}.spec'.format(suma_subj, hemi)), ['{0}.{1}.asc'.format(hemi, surf) for surf in args.surf])
+    afni.generate_spec(path.join(args.output, '{0}_both.spec'.format(suma_subj)), ['{0}.{1}.asc'.format(hemi, surf) for surf in args.surf for hemi in ['lh', 'rh']])
+    afni.generate_spec(path.join(args.output, '{0}_view.spec'.format(suma_subj)), ['{0}.{1}.asc'.format(hemi, surf) for surf in ['smoothwm', 'inflated'] for hemi in ['lh', 'rh']])
 
     # Copy SurfVol from SUMA directory
     !cp {args.input}/{suma_subj}_SurfVol+orig.* {args.output}
 
     # Create viewing scripts for afni and suma
-    with open(f'{args.output}/run_suma_hd', 'w') as fout:
+    with open('{0}/run_suma_hd'.format(args.output), 'w') as fout:
         fout.write('afni -niml &\n')
-        fout.write(f'suma -spec {suma_subj}_view.spec -sv {suma_subj}_SurfVol+orig &\n')
+        fout.write('suma -spec {0}_view.spec -sv {0}_SurfVol+orig &\n'.format(suma_subj))

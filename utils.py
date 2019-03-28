@@ -3,7 +3,8 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
 import sys, os, re, glob, shlex, string
 import subprocess, multiprocessing, ctypes, time, uuid
-from contextlib import contextmanager
+import json
+from datetime import datetime
 from itertools import chain
 from collections import OrderedDict
 from os import path
@@ -41,7 +42,7 @@ def expand_index_list(index_list, format=None):
             flatten.extend(range(int(start), int(end)+1))
         elif ':' in x: # 3:7 => 3,4,5,6 or 3:7:2 => 3,5
             flatten.extend(range(*map(int, x.split(':'))))
-        elif '..' in x: # 3..7 => 3,4,5,6,7 or 3..7(2) => 3,5,7
+        elif '..' in x: # 3..7 => 3,4,5,6,7 or '3..7(2)' => 3,5,7
             range_ = list(map(int, re.split('\.\.|\(|\)', x)[:3]))
             range_[1] += 1
             flatten.extend(range(*range_))
@@ -67,6 +68,13 @@ def iterable(x): # Like the builtin `callable`
 
 class FilenameManager(object):
     @classmethod
+    def from_glob(cls, fmt, **kwargs):
+        self = cls(fmt, **kwargs)
+        files = self.glob()
+        self.parse(files)
+        return self
+
+    @classmethod
     def fmt2kws(cls, fmt, **kwargs):
         kws = {t[1]: kwargs.get(t[1], '*') for t in string.Formatter().parse(fmt) if t[1] is not None}
         return kws
@@ -76,7 +84,7 @@ class FilenameManager(object):
         self.kws = self.fmt2kws(self.fmt, **kwargs)
 
     def glob(self, **kwargs):
-        files = glob.glob(self.fmt.format(**dict(self.kws, **kwargs)))
+        files = sorted(glob.glob(self.fmt.format(**dict(self.kws, **kwargs))))
         return files
 
     def format(self, fmt=None, keepdims=False, **kwargs):
@@ -154,9 +162,88 @@ def exists(fname):
         return True
 
 
+class CacheManager(object):
+    def __init__(self, persistent_file=None, ignore_init_run=True):
+        self.persistent_file = 'cache_manager.json' if persistent_file is None else persistent_file
+        self.ignore_init_run = ignore_init_run
+        if self.persistent_file and path.exists(self.persistent_file):
+            self.load_contexts()
+        else:
+            self.file_contexts = {}
+
+    def load_contexts(self):
+        if self.persistent_file:
+            with open(self.persistent_file, 'r') as f:
+                self.file_contexts = json.load(f)
+
+    def save_contexts(self):
+        if self.persistent_file:
+            with open(self.persistent_file, 'w') as f:
+                json.dump(self.file_contexts, f)
+
+    def watch_files_updated(self, fname, watch_files):
+        if watch_files is None:
+            return False
+        if isinstance(watch_files, six.string_types):
+            watch_files = [watch_files]
+        mtimes = self.file_contexts[fname]['watch_file_mtimes']
+        flag = False
+        for watch_file in watch_files:
+            mtime = path.getmtime(watch_file)
+            if watch_file not in mtimes:
+                mtimes[watch_file] = mtime
+                if not self.ignore_init_run:
+                    print('>> File "{0}" is being watched'.format(watch_file))
+                    flag = True
+            elif mtime != mtimes[watch_file]:
+                print('>> File "{0}" has been modified at {1}'.format(watch_file, 
+                    datetime.fromtimestamp(mtime).strftime('%H:%M:%S %Y-%m-%d')))
+                mtimes[watch_file] = mtime
+                flag = True
+        return flag
+
+    def kwargs_updated(self, fname, kwargs):
+        if not kwargs:
+            return False
+        kws = self.file_contexts[fname]['kwargs']
+        flag = False
+        for k, v in kwargs.items():
+            if k not in kws:
+                kws[k] = v
+                if not self.ignore_init_run:
+                    print('>> Variable "{0}" is being watched'.format(k))
+                    flag = True
+            elif v != kws[k]:
+                print('>> Variable "{0}" has been modified from {1} -> {2}'.format(k, kws[k], v))
+                kws[k] = v
+                flag = True
+        return flag
+
+    def exists(self, fname, watch_files=None, force_redo=False, **kwargs):
+        if fname not in self.file_contexts:
+            self.file_contexts[fname] = {'watch_file_mtimes': {}, 'kwargs': {}}
+        mtimes_updated = self.watch_files_updated(fname, watch_files)
+        kws_updated = self.kwargs_updated(fname, kwargs)
+        self.save_contexts()
+        if not path.exists(fname) or mtimes_updated or kws_updated or force_redo:
+            # Execute the code block
+            return False
+        else:
+            print('>> Reuse existing "{0}"'.format(fname))
+            return True
+
+
 def temp_prefix(prefix='tmp_', n=4, suffix='.'):
     return prefix + uuid.uuid4().hex[:n] + suffix
 
+
+def temp_folder(parent=None):
+    folder = temp_prefix(suffix='')
+    if parent is not None:
+        folder = path.join(parent, folder)
+    if not path.exists(folder):
+        os.makedirs(folder)
+    return folder
 
 
 class ParallelCaller(object):
@@ -286,7 +373,7 @@ def parallel_3D(cmd, in_file, prefix, n_jobs=1, schema=None, fname_mapper=None, 
                 split_schema[k]['splits'].append([s*delta, 0])
             else:
                 split_schema[k]['splits'].append([s*delta, D-(s+1)*delta])
-    print('>> Split the volume into {0}x{1}x{2}={3} chunks...'.format(*schema, np.prod(schema)))
+    print('>> Split the volume into {0}x{1}x{2}={3} chunks...'.format(schema[0], schema[1], schema[2], np.prod(schema)))
     # Split input 3D file
     tmp_ = temp_prefix()
     s0, e0 = split_schema[0]['dim']
@@ -299,30 +386,32 @@ def parallel_3D(cmd, in_file, prefix, n_jobs=1, schema=None, fname_mapper=None, 
             for l, (ns2, ne2) in enumerate(split_schema[2]['splits']):
                 label = path.join(output_dir, '{0}{1:02d}_{2:02d}_{3:02d}'.format(tmp_, m, n, l))
                 split_params[label] = (ns0, ne0, ns1, ne1, ns2, ne2, m, n, l)
-                pc.check_call(f'''
+                pc.check_call('''
                     3dZeropad -{s0} -{ns0} -{e0} -{ne0} -{s1} -{ns1} -{e1} -{ne1} -{s2} -{ns2} -{e2} -{ne2} \
                         -prefix {label} -overwrite {in_file}
-                    ''')
+                    '''.format(s0=s0, ns0=ns0, e0=e0, ne0=ne0, s1=s1, ns1=ns1, e1=e1, ne1=ne1, 
+                        s2=s2, ns2=ns2, e2=e2, ne2=ne2, label=label, in_file=in_file))
     pc.wait()
     # Parallel call
     if not isinstance(cmd, six.string_types):
         cmd = ' '.join(cmd)
     for label in split_params:
-        pc.check_call(cmd.format(in_file=f'{label}+orig', prefix=f'{label}_out'), **kwargs)
+        pc.check_call(cmd.format(in_file='{0}+orig'.format(label), prefix='{0}_out'.format(label)), **kwargs)
     pc.wait()
     # Combine output 3D files
     if combine_output:
         for label, (ns0, ne0, ns1, ne1, ns2, ne2, m, n, l) in split_params.items():
-            fi = fname_mapper(f'{label}_out+orig')
-            pc.check_call(f'''
+            fi = fname_mapper('{0}_out+orig'.format(label))
+            pc.check_call('''
                 3dZeropad -{s0} {ns0} -{e0} {ne0} -{s1} {ns1} -{e1} {ne1} -{s2} {ns2} -{e2} {ne2} \
                     -prefix {label}_pad -overwrite {fi}
-                ''')
+                '''.format(s0=s0, ns0=ns0, e0=e0, ne0=ne0, s1=s1, ns1=ns1, e1=e1, ne1=ne1, 
+                    s2=s2, ns2=ns2, e2=e2, ne2=ne2, label=label, fi=fi))
         pc.wait()
-        glob_pattern = path.join(output_dir, f'{tmp_}*_pad+orig.HEAD')
-        subprocess.check_call(f'''
+        glob_pattern = path.join(output_dir, '{0}*_pad+orig.HEAD'.format(tmp_))
+        subprocess.check_call('''
             3dTstat -sum -prefix {prefix} -overwrite "{glob_pattern}"
-            ''', shell=True)
+            '''.format(prefix=prefix, glob_pattern=glob_pattern), shell=True)
     # Remove temp files
     for f in glob.glob(path.join(output_dir, tmp_+'*')):
         os.remove(f)

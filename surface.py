@@ -320,19 +320,19 @@ class Surface(object):
         tmp_out = []
         pc = utils.ParallelCaller()
         for k, dset in enumerate(surf_dset):
-            tmp_out.append(f'tmp.{self.hemis[k]}.{prefix}+orig.HEAD')
-            cmd = f'3dSurf2Vol \
-                -spec {self.specs[k]} \
-                -surf_A smoothwm \
-                -surf_B pial \
-                -sv {self.surf_vol} \
-                -grid_parent {grid_parent} \
-                -sdata_1D {dset} \
-                -f_steps 13 \
-                -f_p1_fr -0.0 \
-                -f_pn_fr 0.0 \
-                -map_func ave \
-                -prefix {tmp_out[k]} -overwrite'
+            tmp_out.append('tmp.{0}.{1}+orig.HEAD'.format(self.hemis[k], prefix))
+            cmd = ['3dSurf2Vol',
+                '-spec', self.specs[k],
+                '-surf_A', 'smoothwm',
+                '-surf_B', 'pial',
+                '-sv', self.surf_vol,
+                '-grid_parent', grid_parent,
+                '-sdata_1D', dset,
+                '-f_steps', '13',
+                '-f_p1_fr', '-0.0',
+                '-f_pn_fr', '0.0',
+                '-map_func', 'ave',
+                '-prefix', tmp_out[k], '-overwrite']
             pc.check_call(cmd)
         pc.wait()
         subprocess.check_call(['3dcalc', '-l', tmp_out[0], '-r', tmp_out[1], '-expr', 'max(l,r)', 
