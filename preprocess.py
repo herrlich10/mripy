@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import os, glob, shutil, subprocess, warnings
+import os, glob, shutil, re, subprocess, warnings
 from os import path
 from collections import OrderedDict
 import numpy as np
@@ -12,7 +12,7 @@ except ImportError:
 from . import six, afni, io, utils
 
 
-def parse_seq_info(raw_dir, return_dataframe=False):
+def parse_seq_info(raw_dir, return_dataframe=True):
     '''
     Assuming your rawdata folder hierarchy is like:
         raw_fmri
@@ -51,7 +51,9 @@ def find_best_reverse(seq_info, forward='func', reverse='reverse'):
 
 
 def check_outputs(outputs):
-    outputs['finished'] = np.all([path.exists(f) for n, f in outputs.items()])
+    finished = np.all([path.exists(f) for n, f in outputs.items()])
+    outputs['finished'] = finished
+    return finished
 
 
 def blip_unwarp(forward_file, reverse_file, reverse_loc, out_file, PE_axis='AP', patch_size=15):
@@ -164,7 +166,7 @@ def apply_transforms(transforms, base_file, in_file, out_file):
         'out_file': f"{out_dir}{prefix}{ext}",
     }
 
-    has_nwarp = not np.all(f.endswith('.1D') for f in transforms)
+    has_nwarp = not np.all([f.endswith('.1D') for f in transforms])
     transform_list = ' '.join(transforms)
     if has_nwarp:
         # '-interp wsinc5' is the default
@@ -173,7 +175,9 @@ def apply_transforms(transforms, base_file, in_file, out_file):
             -prefix {out_file} -overwrite")
     else:
         combined = utils.temp_prefix(suffix='.1D')
-        afni.call(f"cat_matvec -ONELINE {transform_list} > {combined}")
+        with open(f'{combined}', 'w') as fo:
+            for line in afni.check_output(f"cat_matvec -ONELINE {transform_list}"):
+                fo.write(line)
         # 'wsinc5' is 8x slower than 'quintic', but is highly accurate 
         # and should reduce the smoothing artifacts (see 3dAllineate)
         afni.call(f"3dAllineate -final wsinc5 -base {base_file} \
@@ -187,10 +191,10 @@ def apply_transforms(transforms, base_file, in_file, out_file):
 
 def manual_transform(in_file, out_file, shift=None, rotate=None, scale=None, shear=None, interp=None):
     '''
-    shift : [x, y, z] in voxels
+    shift : [x, y, z] in mm
     rotate : [I, R, A] in degrees (i.e., -z, -x, -y axes), right-hand rule
 
-    For example, 'shift=[1,0,0]' shifts in_file to the left by 1 voxel.
+    For example, 'shift=[1,0,0]' shifts in_file to the left by 1 mm (not necessarily 1 voxel).
     The acutal applied param will be negated. Because if the source is shifted to the left 
     compared with the base, the resulted param will be x=1 indicating that source is shifted
     to the left, and apply that param will actually cause the source to shift rightward by 1
@@ -230,9 +234,32 @@ def manual_transform(in_file, out_file, shift=None, rotate=None, scale=None, she
         os.remove(param_file)
 
 
+def nudge_cmd2mat(nudge_cmd, in_file):
+    '''
+    Refer to "Example 4"@SUMA_AlignToExperiment for details.
+    '''
+    match = re.search(r'(-?\d+\.\d{2}I) (-?\d+\.\d{2}R) (-?\d+\.\d{2}A).*(-?\d+\.\d{2}S) (-?\d+\.\d{2}L) (-?\d+\.\d{2}P)', nudge_cmd)
+    if match:
+        I, R, A, S, L, P = match.groups()
+        temp_file = utils.temp_prefix(suffix='.nii')
+        afni.call(f"3drotate -NN -clipit -rotate {I} {R} {A} -ashift {S} {L} {P} -prefix {temp_file} {in_file}")
+        res = afni.check_output(f"cat_matvec '{temp_file}::ROTATE_MATVEC_000000' -I -ONELINE")[-2]
+        os.remove(temp_file)
+        return np.float_(res.split()).reshape(3,4)
+    else:
+        raise ValueError(f"`nudge_cmd` should contain something like '-rotate 0.00I -20.00R 0.00A -ashift 13.95S -2.00L -11.01P'")
+
+
 def motion_correction(in_files, out_files, reverse_files=None):
     pass
     
+
+def skullstrip_mp2rage(in_files, out):
+    '''
+    in_files : list or str
+    '''
+    pass
+
 
 if __name__ == '__main__':
     pass

@@ -587,7 +587,7 @@ def parse_series_info(fname, timestamp=False, shift_time=None, series_pattern=SE
     return info
 
 
-def convert_dicom(folder, output_dir=None, prefix=None):
+def convert_dicom(folder, output_dir=None, prefix=None, out_type=None, dicom_ext='.IMA'):
     if output_dir is None:
         output_dir = '.'
     output_dir = path.realpath(path.expanduser(output_dir))
@@ -599,7 +599,7 @@ def convert_dicom(folder, output_dir=None, prefix=None):
     try:
         os.chdir(path.realpath(folder))
         with open('uniq_image_list.txt', 'w') as out_file:
-            subprocess.check_call(['uniq_images'] + glob.glob('*.IMA'), stdout=out_file) # Prevent shell injection
+            subprocess.check_call(['uniq_images'] + glob.glob('*'+dicom_ext), stdout=out_file) # Prevent shell injection
         cmd = '''Dimon -infile_list uniq_image_list.txt
             -gert_create_dataset
             -gert_outdir "{0}"
@@ -610,12 +610,13 @@ def convert_dicom(folder, output_dir=None, prefix=None):
             -save_details Dimon.details
             -gert_quit_on_err
             '''.format(output_dir, prefix)
-        afni.check_output(cmd)
+        # afni.check_output(cmd)
+        afni.call(cmd)
     finally:
         os.chdir(old_path)
 
 
-def convert_dicoms(folder, output_dir=None, prefix=None):
+def convert_dicoms(folder, output_dir=None, prefix=None, dicom_ext='.IMA'):
     '''
     Parameters
     ----------
@@ -629,7 +630,7 @@ def convert_dicoms(folder, output_dir=None, prefix=None):
     '''
     idx = 0
     for f in glob.glob(path.join(folder, '*')):
-        if path.isdir(f) and len(glob.glob(path.join(f, '*.IMA'))) > 0:
+        if path.isdir(f) and len(glob.glob(path.join(f, '*'+dicom_ext))) > 0:
             idx += 1
             convert_dicom(f, output_dir, prefix if prefix is None else '{0}{1:02d}'.format(prefix, idx))
 
@@ -1163,11 +1164,15 @@ def read_affine(fname, oneline=None, sep=None):
     return mat
 
 
-def write_affnie(fname, mat, sep=None):
+def write_affine(fname, mat, oneline=True, sep=None):
     if sep is None:
         sep = ' '
     with open(fname, 'w') as fo:
-        fo.write(sep.join(['%.6f' % x for x in mat.flat]) + '\n')
+        if oneline:
+            fo.write(sep.join(['%.6f' % x for x in mat.flat]) + '\n')
+        else:
+            for row in mat:
+                fo.write(sep.join(['%.6f' % x for x in row]) + '\n')
 
 
 if __name__ == '__main__':

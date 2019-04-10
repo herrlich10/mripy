@@ -41,6 +41,7 @@ vr_parsers = {
 tag_parsers = {
     '0008,0022': ('AcquisitionDate', vr_parsers['DA']),
     '0008,0032': ('AcquisitionTime', vr_parsers['TM']),
+    '0008,103E': ('SeriesDescription', vr_parsers['LO']),
     '0018,0024': ('SequenceName', vr_parsers['SH']),
     '0018,0050': ('SliceThickness', vr_parsers['DS']),
     '0018,0080': ('RepetitionTime', vr_parsers['DS']),
@@ -58,6 +59,10 @@ tag_parsers = {
     '0020,0012': ('AcquisitionNumber', vr_parsers['IS']),
     '0020,0013': ('InstanceNumber', vr_parsers['IS']),
     '0028,0030': ('PixelSpacing', vr_parsers['DS']),
+}
+
+siemens_parsers = {
+    '0051,1016': ('reconstruction', vr_parsers['SH']),
 }
 
 custom_parsers = {
@@ -124,6 +129,7 @@ def parse_dicom_header(fname, search_for_tags=None, **kwargs):
     elements = []
     header = {}
     n_tags_seen = 0
+    tag_parsers.update(siemens_parsers)
     if fname.endswith('.gz'):
         opener = gzip.open
     else:
