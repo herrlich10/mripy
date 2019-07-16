@@ -137,14 +137,14 @@ if __name__ == '__main__':
                 for k in range(n_files):
                     # 3-point temporal median filter
                     # !3dTsmooth -med -prefix {est_input[k]} -overwrite {prep_input[k]}
-                    pc.check_call("3dTsmooth -med -prefix {0} -overwrite {1}".format(est_input[k], prep_input[k]))
+                    pc.run("3dTsmooth -med -prefix {0} -overwrite {1}".format(est_input[k], prep_input[k]))
                 pc.wait()
                 prep_input = est_input
             if 'blur' in args.preprocess:
                 for k in range(n_files):
                     # 1mm FWHM spatial gaussian filter
                     # !3dmerge -1blur_fwhm 1 -doall -prefix {est_input[k]} -overwrite {prep_input[k]}
-                    pc.check_call("3dmerge -1blur_fwhm 1 -doall -prefix {0} -overwrite {1}".format(est_input[k], prep_input[k]))
+                    pc.run("3dmerge -1blur_fwhm 1 -doall -prefix {0} -overwrite {1}".format(est_input[k], prep_input[k]))
                 pc.wait()
                 prep_input = est_input
             if args.mask is not None:
@@ -157,7 +157,7 @@ if __name__ == '__main__':
                 for k in range(n_files):
                     # !3dcalc -a {prep_input[k]} -m {mask_file} -expr 'a*m' \
                     #     -prefix {est_input[k]} -overwrite
-                    pc.check_call("3dcalc -a {0} -m {1} -expr 'a*m' \
+                    pc.run("3dcalc -a {0} -m {1} -expr 'a*m' \
                         -prefix {2} -overwrite".format(prep_input[k], mask_file, est_input[k]))
                 pc.wait()
                 prep_input = est_input
@@ -203,7 +203,7 @@ if __name__ == '__main__':
                     #     -1Dmatrix_save {mat_files[k]} \
                     #     -prefix {tmp_files[k]} -overwrite \
                     #     {est_input[k]}
-                    pc.check_call("3dvolreg -verbose -zpad 2 -base {0} {1} \
+                    pc.run("3dvolreg -verbose -zpad 2 -base {0} {1} \
                         -1Dfile {2} \
                         -1Dmatrix_save {3} \
                         -prefix {4} -overwrite \
@@ -226,7 +226,7 @@ if __name__ == '__main__':
                     #     -1Dmatrix_save {mat_files[k]} \
                     #     -prefix {tmp_files[k]} -overwrite \
                     #     -input {est_input[k]}
-                    pc.check_call("3dAllineate -base {0} {1} -source_automask \
+                    pc.run("3dAllineate -base {0} {1} -source_automask \
                         -wtprefix {2} \
                         -cost {3} -warp shift_rotate \
                         -parfix {4} 0 -parfix {5} 0 -parfix {6} 0 \
@@ -254,7 +254,7 @@ if __name__ == '__main__':
             #     -source {args.input[k]} \
             #     -1Dmatrix_apply {warp_files[k]} \
             #     -prefix {args.output[k]} -overwrite
-            pc.check_call("3dAllineate -base {0} \
+            pc.run("3dAllineate -base {0} \
                 -source {1} \
                 -1Dmatrix_apply {2} \
                 -prefix {3} -overwrite".format(master_file, args.input[k], warp_files[k], args.output[k]))

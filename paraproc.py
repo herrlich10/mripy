@@ -104,15 +104,46 @@ def cmd_for_disp(cmd):
     ----------
     cmd : str, list, or callable
     '''
-    if callable(cmd):
-        return cmd
-    elif isinstance(cmd, string_types):
-        return ' '.join(shlex.split(cmd)) # Remove insignificant whitespaces
-    else: # Assume a list of str
-        return ' '.join(cmd)
+    if not callable(cmd):
+        if isinstance(cmd, string_types):
+            cmd = shlex.split(cmd) # Remove insignificant whitespaces
+        cmd = ' '.join(shlex.quote(s) for s in cmd)
+    return cmd
 
 
-def run(cmd, check=True, verbose=2):
+ERROR_PATTERN = r'error|^\*{2}\s'
+
+
+def check_output_for_errors(output, error_pattern=None, verbose=1, label=''):
+    '''
+    User can skip error checking by setting error_pattern=''
+    '''
+    if error_pattern is None:
+        error_pattern = ERROR_PATTERN
+    n_errors = 0
+    if error_pattern != '': # User can skip error checking by setting error_pattern=''
+        if isinstance(error_pattern, string_types): # User can provide compiled regex if case sensitivity is desired
+            error_pattern = re.compile(error_pattern, re.IGNORECASE)
+        for line in output:
+            if error_pattern.search(line):
+                if verbose > 0:
+                    print(label, line, end='')
+                n_errors += 1
+    return n_errors
+
+
+def check_output_for_goal(output, goal_pattern=None):
+    if goal_pattern is None:
+        return True
+    if isinstance(goal_pattern, string_types): # User can provide compiled regex if case sensitivity is desired
+        goal_pattern = re.compile(goal_pattern, re.IGNORECASE)
+    for line in output:
+        if goal_pattern.search(line):
+            return True
+    return False
+
+
+def run(cmd, check=True, error_pattern=None, goal_pattern=None, shell=False, verbose=2):
     '''Run an external command line.
     
     This function is similar to subprocess.run introduced in Python 3.5, but
@@ -122,11 +153,11 @@ def run(cmd, check=True, verbose=2):
     ----------
     cmd : str or list
     '''
-    cmd = cmd_for_exec(cmd)
+    cmd = cmd_for_exec(cmd, shell=shell)
     cmd_str = cmd_for_disp(cmd)
     if verbose > 0:
         print('>>', cmd_str)
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=False)
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=shell)
     res = {'cmd': cmd_str, 'pid': p.pid, 'output': [], 'start_time': time.time()}
     for line in iter(p.stdout.readline, b''): # The 2nd argument is sentinel character (there will be no ending empty line)
         res['output'].append(line.decode('utf-8'))
@@ -137,8 +168,11 @@ def run(cmd, check=True, verbose=2):
     res['stop_time'] = time.time()
     if verbose > 0:
         print('>> Command finished in {0}.'.format(format_duration(res['stop_time'] - res['start_time'])))
-    if res['returncode'] and check:
+    if check and (res['returncode'] or check_output_for_errors(res['output'], error_pattern=error_pattern, verbose=verbose)):
+        print('>> Please pay attention to the above errors.')
         raise RuntimeError(f'Error occurs when executing the following command (returncode={p.returncode}):\n{cmd_str}')
+    if check and not check_output_for_goal(res['output'], goal_pattern=goal_pattern):
+        raise RuntimeError(f'Expected goal pattern "{goal_pattern}" does not found! Something must be wrong!')
     return res
 
 
@@ -175,10 +209,11 @@ class PooledCaller(object):
         self._n_cmds = 0 # Auto increased counter for generating cmd idx
         self._idx2pid = {}
         self._pid2job = {} # Hold all jobs for each wait()
-        self._log = [] # Hold all jobs for all waits (entire execution history for this PooledCaller instance)
+        self._log = [] # Hold all jobs across waits (entire execution history for this PooledCaller instance)
+        self._fulfilled = {} # Fulfilled dependencies across waits (a faster API compared with self._log)
         self.res_queue = multiprocessing.Queue() # Queue for return values of executed python callables
  
-    def run(self, cmd, *args, **kwargs):
+    def run(self, cmd, *args, _depends=None, _dispatch=False, _error_pattern=None, **kwargs):
         '''Asynchronously run command or callable (queued execution, return immediately).
         
         See subprocess.Popen() for more information about the arguments.
@@ -204,10 +239,25 @@ class PooledCaller(object):
         *args, **kwargs : 
             If cmd is a callable, *args and **kwargs are passed to the callable as its arguments.
             If cmd is a list or str, **kwargs are passed to subprocess.Popen().
+        _depends : list
+            A list of jobs (identified by their uuid) that have to be done 
+            before this job can be scheduled.
+        _dispatch : bool
+            Dispatch the job immediately, which will run in the background without blocking.
+        _error_pattern : str
+
+        Returns
+        -------
+        _uuid : str
+            The uuid of current job (which can be used as future jobs' dependency)
         '''
         cmd = cmd_for_exec(cmd, shell=kwargs)
-        self.cmd_queue.append((self._n_cmds, cmd, args, kwargs))
+        _uuid = uuid.uuid4().hex[:8]
+        self.cmd_queue.append((self._n_cmds, cmd, args, kwargs, _uuid, _depends, _error_pattern))
         self._n_cmds += 1 # Accumulate by each call to run(), and reset after wait()
+        if _dispatch:
+            self.dispatch()
+        return _uuid
 
     def _callable_wrapper(self, idx, cmd, *args, **kwargs):
         out = TeeOut(tee=(self.verbose > 1))
@@ -247,29 +297,34 @@ class PooledCaller(object):
 
     def dispatch(self):
         # If there are free slot and more jobs
-        while len(self.ps) < self.pool_size and len(self.cmd_queue) > 0:
-            idx, cmd, args, kwargs = self.cmd_queue.pop(0)
-            job = {'idx': idx, 'cmd': cmd_for_disp(cmd), 'output': []} # Create a job process only after it is popped from the queue
-            if self.verbose > 0:
-                print('>> job#{0}: {1}'.format(idx, job['cmd']))
-            if callable(cmd):
-                # TODO: Add an if-else branch here if shared memory doesn't work for wrapper 
-                p = multiprocessing.Process(target=self._callable_wrapper, args=(idx, cmd) + args, kwargs=kwargs)
-                p.start()
-            else:
-                # Use PIPE to capture output and error message
-                p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
-                # Capture output without blocking (the main thread) by using a separate thread to do the blocking readline()
-                job['speed_up'] = threading.Event()
-                job['watcher'] = threading.Thread(target=self._async_reader, args=(idx, p.stdout, job['output'], job['speed_up']), daemon=True)
-                job['watcher'].start()
-            self.ps.append(p)
-            job['start_time'] = time.time()
-            job['pid'] = p.pid
-            job['uuid'] = uuid.uuid4().hex[:6]
-            self._idx2pid[idx] = p.pid
-            self._pid2job[p.pid] = job
-            self._log.append(job)
+        # while len(self.ps) < self.pool_size and len(self.cmd_queue) > 0:
+        if len(self.ps) < self.pool_size and len(self.cmd_queue) > 0:
+            idx, cmd, args, kwargs, _uuid, _depends, _error_pattern = self.cmd_queue.pop(0)
+            if _depends is None or all([dep in self._fulfilled for dep in _depends]): # No dependency or all fulfilled
+                job = {'idx': idx, 'cmd': cmd_for_disp(cmd), 'output': [], 'error_pattern': _error_pattern} # Create a job process only after it is popped from the queue
+                if self.verbose > 0:
+                    print('>> job#{0}: {1}'.format(idx, job['cmd']))
+                if callable(cmd):
+                    # TODO: Add an if-else branch here if shared memory doesn't work for wrapper 
+                    p = multiprocessing.Process(target=self._callable_wrapper, args=(idx, cmd) + args, kwargs=kwargs)
+                    p.start()
+                else:
+                    # Use PIPE to capture output and error message
+                    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
+                    # Capture output without blocking (the main thread) by using a separate thread to do the blocking readline()
+                    job['speed_up'] = threading.Event()
+                    job['watcher'] = threading.Thread(target=self._async_reader, args=(idx, p.stdout, job['output'], job['speed_up']), daemon=True)
+                    job['watcher'].start()
+                self.ps.append(p)
+                job['start_time'] = time.time()
+                job['pid'] = p.pid
+                job['uuid'] = _uuid
+                job['log_idx'] = len(self._log)
+                self._idx2pid[idx] = p.pid
+                self._pid2job[p.pid] = job
+                self._log.append(job)
+            else: # Re-queue the job whose dependencies are not fully fulfilled to the END of the queue
+                self.cmd_queue.append((idx, cmd, args, kwargs, _uuid, _depends, _error_pattern))
 
     def _async_get_res(self, res_list):
         try:
@@ -288,12 +343,12 @@ class PooledCaller(object):
         
         Returns
         -------
-        return_values : list (if return_codes=False)
-            Return value of python callable. Always `None` for command.
-        codes : list (if return_codes=True)
+        return_values : list
+            Return values of executed python callable. Always `None` for command.
+        codes : list (only when return_codes=True)
             The return code of the child process for each job.
-        jobs : list (if return_jobs=True, `jobs` will be the second return value)
-            Detailed information about the child process, including captured stdout and stderr.
+        jobs : list (only when return_jobs=True)
+            Detailed information about each child process, including captured stdout and stderr.
         '''
         if pool_size is not None:
             # Allow temporally adjust pool_size for current batch of jobs
@@ -320,6 +375,7 @@ class PooledCaller(object):
                         self.res_queue.put([job['idx'], None]) # Return None to mimic callable behavior
                         job.pop('watcher') # These helper objects may not be useful for the end users
                         job.pop('speed_up')
+                        self._fulfilled[job['uuid']] = job['log_idx'] # Marked as fulfilled, even with error (or shall I break all??)
                     else:
                         pass
                 elif isinstance(p, multiprocessing.Process):
@@ -329,6 +385,7 @@ class PooledCaller(object):
                         self.ps.remove(p)
                         if self.verbose > 0:
                             print('>> job#{0} finished in {1}.'.format(job['idx'], format_duration(job['stop_time']-job['start_time'])))
+                        self._fulfilled[job['uuid']] = job['log_idx'] # Marked as fulfilled
                     else:
                         pass
             time.sleep(0.1)
@@ -357,12 +414,13 @@ class PooledCaller(object):
         self._pid2job = {}
         if pool_size is not None:
             self.pool_size = old_size
-        if return_codes:
-            return (codes, jobs) if return_jobs else codes
+        res = (ress,) + ((codes,) if return_codes else ()) + ((jobs,) if return_jobs else ())
+        if len(res) == 1:
+            return res[0]
         else:
-            return (ress, jobs) if return_jobs else ress
+            return res
 
-    def all_successful(self, error_pattern='error|\*{2}', jobs=None, verbose=None):
+    def all_successful(self, jobs=None, verbose=None):
         if jobs is None:
             jobs = self._log
         if verbose is None:
@@ -370,15 +428,7 @@ class PooledCaller(object):
         # Check return codes
         all_zero = not np.any([job['returncode'] for job in jobs])
         # Check output
-        n_errors = 0
-        if error_pattern is not None:
-            error_pattern = re.compile(error_pattern, re.IGNORECASE)
-            for job in jobs:
-                for line in job['output']:
-                    if error_pattern.search(line):
-                        if verbose > 0:
-                            print('[job#{0}] {1}'.format(job['idx'], line), end='')
-                        n_errors += 1
+        n_errors = sum([check_output_for_errors(job['output'], error_pattern=job['error_pattern'], verbose=verbose, label='[job#{0}]'.format(job['idx'])) for job in jobs])
         return all_zero and n_errors == 0
 
     def idss(self, total, batch_size=None):
@@ -386,17 +436,21 @@ class PooledCaller(object):
             batch_size = int(np.ceil(total / self.pool_size / 10))
         return (range(k, min(k+batch_size, total)) for k in range(0, total, batch_size))
 
-    def __call__(self, job_generator):
-        # This is similar to the joblib.Parallel signature. 
-        # It allows each call to deal with a batch of jobs for better performance, 
-        # especially useful when there are a huge amount of small jobs.
-        # e.g. pc(pc.run(compute_depth, ids, *args) for ids in pc.idss(len(depths)))
-        n_batches = 0
-        for _ in job_generator:
-            n_batches += 1
+    def __call__(self, job_generator, **kwargs):
+        # This is similar to the joblib.Parallel signature, which is the only way to
+        # pass both args and kwargs for inner execution.
+        # >>> pc(pc.run(f"3dvolreg -prefix ... {func}{run}.nii") for run in runs)
+        # 
+        # It also allows each call to deal with a batch of jobs for better performance, 
+        # if the callable is purposely designed to do so, which is especially useful 
+        # when there are a huge amount of small jobs.
+        # >>> pc(pc.run(compute_depth, ids, *args) for ids in pc.idss(len(depths)))
+        n_jobs = 0
+        for _ in job_generator: # Queue all jobs from the generator
+            n_jobs += 1
         if self.verbose > 0:
-            print('>> Start with a total of {0} jobs...'.format(n_batches))
-        self.wait()
+            print('>> Start with a total of {0} jobs...'.format(n_jobs))
+        return self.wait(**kwargs) # Wait all jobs to finish
 
 
 class ArrayWrapper(type):
@@ -406,6 +460,17 @@ class ArrayWrapper(type):
     '''
     def __init__(cls, name, bases, dct):
         def make_descriptor(name):
+            '''
+            Implementation notes
+            --------------------
+            1. Method (or non-data) descriptors are objects that define __get__() method
+               but not __set__() method. Refer to [here](https://docs.python.org/3.6/howto/descriptor.html).
+            2. The magic methods of an object (e.g., arr.__add__) are descriptors, not callable.
+               So here we must return a property (with getter only), not a lambda.
+            3. Strangely, the whole thing must be wrapped in a nested function. See [here](
+               https://stackoverflow.com/questions/9057669/how-can-i-intercept-calls-to-pythons-magic-methods-in-new-style-classes).
+            4. The wrapped array must be named self.arr
+            '''
             return property(lambda self: getattr(self.arr, name))
 
         type.__init__(cls, name, bases, dct)

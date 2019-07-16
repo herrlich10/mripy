@@ -8,7 +8,7 @@ import random, string
 from os import path
 from datetime import datetime
 import numpy as np
-from . import six, utils, afni
+from . import six, utils, afni, paraproc
 # For accessing NIFTI files
 try:
     import nibabel
@@ -501,7 +501,7 @@ def filter_dicom_files(files, series_numbers=None, instance_numbers=None, series
     return filtered
 
 
-def pares_slice_order(dicom_files):
+def parse_slice_order(dicom_files):
     t = None
     if len(dicom_files) > 1:
         temp_dir = 'temp_pares_slice_order'
@@ -587,55 +587,65 @@ def parse_series_info(fname, timestamp=False, shift_time=None, series_pattern=SE
     return info
 
 
-def convert_dicom(folder, output_dir=None, prefix=None, out_type=None, dicom_ext='.IMA'):
-    if output_dir is None:
-        output_dir = '.'
-    output_dir = path.realpath(path.expanduser(output_dir))
-    if not path.exists(output_dir):
-        os.makedirs(output_dir)
-    if prefix is None:
-        prefix = path.split(folder)[1]
+def convert_dicom(dicom_dir, out_file=None, dicom_ext=None, interactive=False):
+    if dicom_ext is None:
+        dicom_ext = '.IMA'
+    if out_file is None:
+        out_file = './*.nii'
+    out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True)
+    out_dir = path.realpath(path.expanduser(out_dir)) # It is special here because we'll change dir later
+    if not path.exists(out_dir):
+        os.makedirs(out_dir)
+    if prefix == '*': # Take the dicom folder name by default
+        prefix = path.split(dicom_dir)[1]
     old_path = os.getcwd()
     try:
-        os.chdir(path.realpath(folder))
-        with open('uniq_image_list.txt', 'w') as out_file:
-            subprocess.check_call(['uniq_images'] + glob.glob('*'+dicom_ext), stdout=out_file) # Prevent shell injection
-        cmd = '''Dimon -infile_list uniq_image_list.txt
-            -gert_create_dataset
-            -gert_outdir "{0}"
-            -gert_to3d_prefix "{1}"
-            -overwrite
-            -dicom_org
-            -use_obl_origin
-            -save_details Dimon.details
-            -gert_quit_on_err
-            '''.format(output_dir, prefix)
-        # afni.check_output(cmd)
-        afni.call(cmd)
+        os.chdir(dicom_dir)
+        with open('uniq_image_list.txt', 'w') as fo:
+            subprocess.check_call(['uniq_images'] + glob.glob('*'+dicom_ext), stdout=fo) # Prevent shell injection by not using shell=True with user defined string
+        interactive_cmd = '' if interactive else '-gert_quit_on_err'
+        utils.run("Dimon -infile_list uniq_image_list.txt \
+            -gert_create_dataset -gert_outdir '{0}' -gert_to3d_prefix '{1}' -overwrite \
+            -dicom_org -use_obl_origin -save_details Dimon.details {2}".format(out_dir, prefix+ext, interactive_cmd))
     finally:
         os.chdir(old_path)
 
 
-def convert_dicoms(folder, output_dir=None, prefix=None, dicom_ext='.IMA'):
+def convert_dicoms(dicom_dirs, out_dir=None, prefix=None, out_type='.nii', dicom_ext='.IMA', **kwargs):
     '''
     Parameters
     ----------
-    folder : str
-        Root folder of rawdata, containing multiple sub-folders of *.IMA files.
-        E.g., folder/anat, folder/func01, folder/func02, etc.
-    output_dir : str
+    dicom_dirs : list or str
+        1. A list of folders containing *.IMA files
+        2. It can also be a glob pattern that describes a list of folders, e.g., "raw_fmri/func??"
+        3. Finally, it can be a root folder (e.g., "raw_fmri") containing multiple sub-folders of *.IMA files, 
+           raw_fmri/anat, raw_fmri/func01, raw_fmri/func02, etc.
+    out_dir : str
         Output directory for converted datasets, default is current directory.
-        E.g., the output would look like
-        output_dir/anat+orig, output_dir/func01+orig, etc.
+        The output would look like:
+            out_dir/anat.nii, out_dir/func01.nii, out_dir/func02.nii, etc.
     '''
+    if isinstance(dicom_dirs, six.string_types):
+        if utils.contain_wildcard(dicom_dirs):
+            dicom_dirs = glob.glob(dicom_dirs)
+        else:
+            dicom_dirs = glob.glob(path.join(dicom_dirs, '*'))
+    if out_dir is None:
+        out_dir = '.'
     idx = 0
-    for f in glob.glob(path.join(folder, '*')):
+    for f in dicom_dirs:
         if path.isdir(f) and len(glob.glob(path.join(f, '*'+dicom_ext))) > 0:
             idx += 1
-            convert_dicom(f, output_dir, prefix if prefix is None else '{0}{1:02d}'.format(prefix, idx))
+            convert_dicom(f, path.join(out_dir, '*'+out_type if prefix is None else '{0}{1:02d}{2}'.format(prefix, idx, out_type)), dicom_ext=dicom_ext, **kwargs)
 
 
 # Volume data
+def read_vol(fname, return_img=False):
+    img = nibabel.load(fname)
+    vol = img.get_data()
+    return (vol, img) if return_img else vol
+
+
 def read_nii(fname, return_img=False):
     if fname[-4:] != '.nii':
         fname = fname + '.nii'
@@ -984,7 +994,10 @@ class Mask(object):
         self.value = None
         if self.master is not None:
             self._infer_geometry(self.master)
-            self.value = read_afni(self.master).ravel('F')
+            if master.endswith('.nii'):
+                self.value = read_nii(self.master).ravel('F')
+            else:
+                self.value = read_afni(self.master).ravel('F')
             if kind == 'mask':
                 idx = self.value > 0 # afni uses Fortran index here
                 self.value = self.value[idx]
@@ -1001,6 +1014,16 @@ class Mask(object):
         res = afni.check_output(['3dAttribute', 'DELTA', fname])[-2]
         DELTA = np.fromiter(map(float, res.split()), float)
         self.MAT = np.c_[np.diag(DELTA), ORIGIN][[0,2,1],:]
+
+    def to_dict(self):
+        return dict(master=self.master, value=self.value, index=self.index, IJK=self.IJK, MAT=self.MAT)
+
+    @classmethod
+    def from_dict(cls, d):
+        self = cls(None)
+        for k, v in d.items():
+            setattr(self, k, v)
+        return self
 
     @classmethod
     def from_expr(cls, expr=None, **kwargs):
@@ -1046,6 +1069,11 @@ class Mask(object):
     def __contains__(self, other):
         assert(self.compatible(other))
         return np.all(np.in1d(other.index, self.index, assume_unique=True))
+
+    def pick(self, selector, inplace=False):
+        mask = self if inplace else copy.deepcopy(self)
+        mask.index = mask.index[selector]
+        return mask
 
     def constrain(self, func, return_selector=False, inplace=False):
         '''
@@ -1100,7 +1128,10 @@ class Mask(object):
         # return np.vstack(read_afni(f).T.flat[self.index] for f in files).T.squeeze() # Cannot handle 4D...
         data = []
         for f in files:
-            vol = read_afni(f)
+            if f.endswith('.nii'):
+                vol = read_nii(f)
+            else:
+                vol = read_afni(f)
             if dtype is not None:
                 vol = vol.astype(dtype)
             S = vol.shape

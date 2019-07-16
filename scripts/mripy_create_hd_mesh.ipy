@@ -27,14 +27,17 @@ if __name__ == '__main__':
     # Interpolate surface meshes
     def interp_mesh(fin, fout):
         print('processing {0}...'.format(fin))
-        verts, faces = io.read_asc(fin)
+        try:
+            verts, faces = io.read_asc(fin)
+        except ValueError:
+            verts, faces = io.read_patch_asc(fin)[:2]
         verts, faces = surface.quadruple_mesh(verts, faces, power=args.power)
         io.write_asc(fout, verts, faces)
     pc = utils.PooledCaller(pool_size=args.jobs)
     for surf in args.surf:
         for hemi in ['lh', 'rh']:
             fname = '{0}.{1}.asc'.format(hemi, surf)
-            pc.check_call(interp_mesh, path.join(args.input, fname), path.join(args.output, fname))
+            pc.run(interp_mesh, path.join(args.input, fname), path.join(args.output, fname))
     pc.wait()
 
     # Create spec files

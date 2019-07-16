@@ -89,21 +89,45 @@ def call(cmd):
         raise RuntimeError(f'Error occurs when executing the following command (returncode={p.returncode}):\n{cmd_str}') 
 
 
-def split_out_file(out_file, with_path=False):
+def split_out_file(out_file, split_path=False, trailing_slash=False):
+    '''
+    Ensure that path.join(out_dir, prefix, ext) can be checked by path.exists().
+
+    >>> split_out_file('dset.nii')
+    ('dset', '.nii')
+    >>> split_out_file('dset.1D')
+    ('dset', '.1D')
+    >>> split_out_file('folder/dset')
+    ('folder/dset', '+orig.HEAD')
+    >>> split_out_file('folder/dset+orig', split_path=True)
+    ('folder', 'dset', '+orig.HEAD')
+    >>> split_out_file('dset+orig.', split_path=True)
+    ('', 'dset', '+orig.HEAD')
+    >>> split_out_file('folder/dset+orig.HEAD', split_path=True, trailing_slash=True)
+    ('folder/', 'dset', '+orig.HEAD')
+    >>> split_out_file('dset+tlrc.BRIK', split_path=True, trailing_slash=True)
+    ('', 'dset', '+tlrc.HEAD')
+    '''
     out_dir, out_name = path.split(out_file)
-    match = re.match('(.+)(.nii|.nii.gz)$', out_name)
+    if trailing_slash and out_dir:
+        out_dir += '/'
+    match = re.match(r'(.+)(.nii|.nii.gz|.1D)$', out_name)
     if match:
         prefix, ext = match.groups()
     else:
-        match = re.match('(.+)(\+(?:orig|tlrc)(?:.|.HEAD|.BRIK)?)$', out_name)
+        match = re.match(r'(.+)(\+(?:orig|tlrc))(?:.|.HEAD|.BRIK)?$', out_name)
         if match:
             prefix, ext = match.groups()
+            ext += '.HEAD'
         else:
-            prefix, ext = out_name, '+orig.HEAD'
-    if with_path:
-        return path.join(out_dir, prefix)
+            prefix = out_name
+            ext = '+orig.HEAD'
+    if split_path:
+        return out_dir, prefix, ext
     else:
-        return (out_dir+'/' if out_dir else ''), prefix, ext
+        return path.join(out_dir, prefix), ext
+
+
 
 
 def get_prefix(fname, with_path=False):
@@ -166,7 +190,8 @@ def get_dims(fname):
     Dimensions (number of voxels) of the data matrix.
     See also: get_head_dims
     '''
-    res = check_output(['@GetAfniDims', fname])[-2] # There can be leading warnings for oblique datasets
+    # res = check_output(['@GetAfniDims', fname])[-2] # There can be leading warnings for oblique datasets
+    res = check_output(['3dinfo', '-n4', fname])[-2] # `@GetAfniDims` may not work for things like `dset.nii'[0..10]'`
     return np.int_(res.split()) # np.fromiter(map(int, res.split()), int)
 
 
@@ -212,6 +237,10 @@ def get_brick_labels(fname, label2index=False):
         return {label: k for k, label in enumerate(labels)}
     else:
         return labels
+
+
+def get_TR(fname):
+    return float(check_output(['3dinfo', '-TR', fname])[-2])
 
 
 def get_S2E_mat(fname, mat='S2E'):

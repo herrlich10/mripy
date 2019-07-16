@@ -60,7 +60,7 @@ if __name__ == '__main__':
                 continue
             gii_file = path.join(suma_dir, '{0}.gii'.format(prefix))
             niml_file = path.join(suma_dir, '{0}.niml.dset'.format(prefix))
-            pc.check_call([
+            pc.run([
                 'mris_convert',
                     '-c', curv_file,
                     path.join(surf_dir, '{0}.white'.format(hemi)),
@@ -79,7 +79,7 @@ if __name__ == '__main__':
         for dset in args.input:
             nii_file = path.join(suma_dir, dset+'.nii.gz')
             # Convert and then shift: according to @SUMA_Make_Spec_FS
-            pc.check_call('''
+            pc.run('''
                 mri_convert --in_type mgz --out_type nii \
                     {0} {1};
                 @Align_Centers -base {2} -dset {1} -no_cp;
@@ -102,7 +102,7 @@ if __name__ == '__main__':
                 prefix = '{0}.{1}'.format(hemi, dset)
                 niml_file = path.join(suma_dir, '{0}.niml.dset'.format(prefix))
                 out_file = path.join(suma_dir, '{0}.niml.dset'.format(prefix))
-                pc.check_call(surface.interp_dset, niml_file, fmesh[hemi], out_file)
+                pc.run(surface.interp_dset, niml_file, fmesh[hemi], out_file)
         pc.wait()
 
     # Generate SUMA ROI files
@@ -110,5 +110,5 @@ if __name__ == '__main__':
         for hemi in hemis:
             for roi in args.roi:
                 f_dset = path.join(suma_dir, '{0}.{1}.niml.dset'.format(hemi, roi))
-                pc.check_call(surface.dset2roi, f_dset)
+                pc.run(surface.dset2roi, f_dset)
         pc.wait()

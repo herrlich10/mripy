@@ -12,43 +12,32 @@ import numpy as np
 from . import six, afni
 
 
-# class ArrayWrapper(type):
-#     def make_descriptor(name):
-#         '''
-#         Notes
-#         -----
-#         1. Method (or non-data) descriptors are objects that define __get__() method
-#             but not __set__() method. [https://docs.python.org/3.6/howto/descriptor.html]
-#         2. The magic methods of an object (e.g., arr.__add__) are descriptors, not callable.
-#             So here we must return a property (with getter only), not a lambda.
-#         3. Strangely, the whole thing must be wrapped in a nested function.
-#             [https://stackoverflow.com/questions/9057669/how-can-i-intercept-calls-to-pythons-magic-methods-in-new-style-classes]
-#         4. The wrappe array must be named self.arr
-#         '''
 from .paraproc import format_duration
-from .paraproc import cmd_for_exec, cmd_for_disp
+from .paraproc import cmd_for_exec, cmd_for_disp, run
 from .paraproc import PooledCaller, SharedMemoryArray
 
 
 # Command line syntactic sugar
 def expand_index_list(index_list, format=None):
-    '''
-    Expand a list of indices like: 1 3-5 7:10:2 8..10(2)
+    '''Expand a list of indices like: 1 3-5 7:10:2 8..10(2)
     '''
     flatten = []
     for x in index_list:
-        if '-' in x: # 3-7 => 3,4,5,6,7
-            start, end = x.split('-')
-            flatten.extend(range(int(start), int(end)+1))
-        elif ':' in x: # 3:7 => 3,4,5,6 or 3:7:2 => 3,5
+        if '-' in x: # 3-7 => 3,4,5,6,7 and 3-7-2 => 3,5,7
+            range_ = list(map(int, x.split('-')))
+            range_[1] += 1
+            flatten.extend(range(*range_))
+        elif ':' in x: # 3:7 => 3,4,5,6 and 3:7:2 => 3,5
             flatten.extend(range(*map(int, x.split(':'))))
-        elif '..' in x: # 3..7 => 3,4,5,6,7 or '3..7(2)' => 3,5,7
-            range_ = list(map(int, re.split('\.\.|\(|\)', x)[:3]))
+        elif '..' in x: # 3..7 => 3,4,5,6,7 and '3..7(2)' => 3,5,7 (note that quotes are required in the shell because of the parentheses)
+            range_ = list(map(int, re.split(r'\.\.|\(|\)', x)[:3])) # [:3] to get rid of the 4th, empty element
             range_[1] += 1
             flatten.extend(range(*range_))
         else: # 3
             flatten.append(int(x))
     return flatten if format is None else [format % x for x in flatten]
+
+
 
 
 def select_and_replace_affix(glob_pattern, old_affix, new_affix):
@@ -64,6 +53,10 @@ def iterable(x): # Like the builtin `callable`
         return not isinstance(x, six.string_types)
     except TypeError:
         return False
+
+
+def contain_wildcard(fname):
+    return any([w in fname for w in ['*', '?']])
 
 
 class FilenameManager(object):

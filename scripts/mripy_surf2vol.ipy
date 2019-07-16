@@ -21,21 +21,25 @@ if __name__ == '__main__':
     parser.add_argument('--spec', help='')
     parser.add_argument('-v', '--surf_vol', default='SurfVol_Alnd_Exp+orig', help='SurfVol (default SurfVol_Alnd_Exp+orig)')
     parser.add_argument('-c', '--combine', default='sum', help='combine both hemispheres to get a single dset')
-    parser.add_argument('-o', '--prefix', help='output prefix (default as 1st ROI)')
+    parser.add_argument('-o', '--prefix', help='output prefix')
     parser.add_argument('-f', '--map_func', default='median', help='')
     args = parser.parse_args()
     spec = afni.get_suma_info(args.suma, args.spec)['spec']
     
-    input_fmt = afni.substitute_hemi(afni.get_prefix(args.input))
+    input_dir = path.split(args.input)[0]
+    input_fmt = path.join(input_dir, afni.substitute_hemi(afni.get_prefix(args.input)))
     if input_fmt == args.input: # args.input is a hemi-agnostic prefix
-        input_fmt = input_fmt + '{0}.niml.dset'
+        input_fmt = input_fmt + '.{0}.niml.dset' # Bug fixed: not '{0}.niml.dset'
     else: # args.input is a full name, e.g., prefix.lh.niml.dset
         input_fmt = afni.substitute_hemi(args.input)
     input_files = glob.glob(input_fmt.format('*'))
     hemis = [re.search(afni.HEMI_PATTERN, fi).group(0) for fi in input_files]
     output_files = ['{0}.{1}+orig.HEAD'.format(args.prefix, hemi) for hemi in hemis]
+    def insert_tmp(f): 
+        p, n = path.split(f)
+        return path.join(p, 'tmp.'+n)
     if len(hemis) > 1:
-        output_files = ['tmp.'+fo for fo in output_files]
+        output_files = [insert_tmp(fo) for fo in output_files]
 
     pc = utils.ParallelCaller() # Execute 2 instances of 3dSurf2Vol in parallel
     for k, hemi in enumerate(hemis):
@@ -64,4 +68,9 @@ if __name__ == '__main__':
                 -prefix {args.prefix} -overwrite
 
     # Remove temp files
-    !rm tmp.*
+    for fo in output_files:
+        print(fo)
+        p, n = path.split(fo)
+        if n.startswith('tmp.'):
+            pattern = afni.get_prefix(fo, with_path=True)+'*'
+            !rm {pattern}

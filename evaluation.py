@@ -3,14 +3,22 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
 import subprocess
 import numpy as np
+from collections import OrderedDict
 from . import six, afni, io
 
 
-def afni_costs(base_img, input_img):
-    cmd = '3dAllineate -base {0} -input {1} -allcostX'.format(base_img, input_img)
+def afni_costs(base_file, in_file):
+    cmd = '3dAllineate -base {0} -input {1} -allcostX'.format(base_file, in_file)
     lines = afni.check_output(cmd, pattern=r'^\s+\S+\s+=\s+\S+')
-    costs = (line.split('=') for line in lines)
-    costs = dict([name.strip(), float(value)] for name, value in costs)
+    costs = OrderedDict()
+    for line in lines:
+        name, value = line.split('=')
+        name = name.strip()
+        if name not in costs:
+            costs[name] = []
+        costs[name].append(float(value))
+    if np.all(np.array([len(v) for k, v in costs.items()]) == 1):
+        costs = OrderedDict((k, v[0]) for k, v in costs.items())
     return costs
 
 
