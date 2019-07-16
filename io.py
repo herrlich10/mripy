@@ -995,7 +995,7 @@ class Mask(object):
         if self.master is not None:
             self._infer_geometry(self.master)
             if master.endswith('.nii'):
-                self.value = read_nii(self.master).ravel('F')
+                self.value = read_nii(self.master).ravel('F') # [x,y,z], x changes the fastest
             else:
                 self.value = read_afni(self.master).ravel('F')
             if kind == 'mask':
@@ -1006,14 +1006,11 @@ class Mask(object):
                 self.index = np.arange(np.prod(self.IJK))
 
     def _infer_geometry(self, fname):
-        self.IJK = afni.get_dims(fname)[:3]
-        # res = afni.check_output(['cat_matvec', self.master+'::IJK_TO_DICOM', '-ONELINE'])[-2] # IJK_TO_DICOM_REAL??
-        # self.MAT = np.fromiter(map(float, res.split()), float).reshape(3,4)
-        res = afni.check_output(['3dAttribute', 'ORIGIN', fname])[-2]
-        ORIGIN = np.fromiter(map(float, res.split()), float)
-        res = afni.check_output(['3dAttribute', 'DELTA', fname])[-2]
-        DELTA = np.fromiter(map(float, res.split()), float)
-        self.MAT = np.c_[np.diag(DELTA), ORIGIN][[0,2,1],:]
+        self.IJK = afni.get_DIMENSION(fname)[:3]
+        ORIENT = afni.get_ORIENT(fname, format='sorter')
+        ORIGIN = afni.get_ORIGIN(fname)
+        DELTA = afni.get_DELTA(fname)
+        self.MAT = np.c_[np.diag(DELTA), ORIGIN][ORIENT,:]
 
     def to_dict(self):
         return dict(master=self.master, value=self.value, index=self.index, IJK=self.IJK, MAT=self.MAT)

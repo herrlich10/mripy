@@ -185,6 +185,71 @@ def get_suma_info(suma_dir, suma_spec=None):
     return info
 
 
+
+def get_ORIENT(fname, format='str'):
+    '''
+    Parameters
+    ----------
+    format : str, {'code', 'str', 'mat', 'sorter'}
+
+    References
+    ----------
+    [1] https://afni.nimh.nih.gov/pub/dist/doc/program_help/README.attributes.html
+        #define ORI_R2L_TYPE  0  /* Right to Left         */
+        #define ORI_L2R_TYPE  1  /* Left to Right         */
+        #define ORI_P2A_TYPE  2  /* Posterior to Anterior */
+        #define ORI_A2P_TYPE  3  /* Anterior to Posterior */
+        #define ORI_I2S_TYPE  4  /* Inferior to Superior  */
+        #define ORI_S2I_TYPE  5  /* Superior to Inferior  */
+
+        Thus "0 3 4" is standard DICOM Reference Coordinates System, i.e., RAI.
+        The AFNI convention is also that R-L, A-P, and I-S are negative-to-positive, i.e., RAI.
+
+    [2] https://nipy.org/nibabel/nifti_images.html
+        On the other hand, NIFTI images have an affine relating the voxel coordinates 
+        to world coordinates in RAS+ space, or LPI in AFNI's term.
+    '''
+    res = check_output(['3dAttribute', 'ORIENT_SPECIFIC', fname])[-2]
+    ORIENT = np.fromiter(map(int, res.split()), int)
+    code2str = np.array(['R', 'L', 'P', 'A', 'I', 'S'])
+    code2mat = np.array([[ 1, 0, 0],
+                         [-1, 0, 0],
+                         [ 0,-1, 0],
+                         [ 0, 1, 0],
+                         [ 0, 0, 1],
+                         [ 0, 0,-1]])
+    code2sorter = np.array([0, 0, 1, 1, 2, 2])
+    if format == 'code':
+        return ORIENT
+    elif format == 'str':
+        return ''.join(code2str[ORIENT])
+    elif format == 'mat':
+        return code2mat[ORIENT]
+    elif format == 'sorter':
+        return code2sorter[ORIENT]
+
+
+def get_DIMENSION(fname):
+    '''
+    [x, y, z, t, 0]
+    '''
+    res = check_output(['3dAttribute', 'DATASET_DIMENSIONS', fname])[-2]
+    DIMENSION = np.fromiter(map(int, res.split()), int)
+    return DIMENSION
+
+
+def get_ORIGIN(fname):
+    res = check_output(['3dAttribute', 'ORIGIN', fname])[-2]
+    ORIGIN = np.fromiter(map(float, res.split()), float)
+    return ORIGIN
+
+
+def get_DELTA(fname):
+    res = check_output(['3dAttribute', 'DELTA', fname])[-2]
+    DELTA = np.fromiter(map(float, res.split()), float)
+    return DELTA
+
+
 def get_dims(fname):
     '''
     Dimensions (number of voxels) of the data matrix.
