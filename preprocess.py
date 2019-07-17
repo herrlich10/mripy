@@ -310,6 +310,7 @@ def nudge_cmd2mat(nudge_cmd, in_file, return_inverse=False):
         utils.run(f"3drotate -NN -clipit -rotate {I} {R} {A} -ashift {S} {L} {P} -prefix {temp_file} {in_file}")
         # Extract the matrix that will apply the same rotation as the command
         mat = afni.check_output(f"cat_matvec '{temp_file}::ROTATE_MATVEC_000000' -I -ONELINE")[-2]
+        # As well as its inverse for convenience
         inv = afni.check_output(f"cat_matvec '{temp_file}::ROTATE_MATVEC_000000' -ONELINE")[-2]
         os.remove(temp_file)
         mat = np.float_(mat.split()).reshape(3,4)

@@ -995,7 +995,7 @@ class Mask(object):
         if self.master is not None:
             self._infer_geometry(self.master)
             if master.endswith('.nii'):
-                self.value = read_nii(self.master).ravel('F') # [x,y,z], x changes the fastest
+                self.value = read_nii(self.master).ravel('F') # [x,y,z], x changes the fastest. Also, NIFTI read/write data in 'F'.
             else:
                 self.value = read_afni(self.master).ravel('F')
             if kind == 'mask':
@@ -1146,9 +1146,19 @@ class Mask(object):
             mat = np.dot(np.diag([-1,-1, 1]), self.MAT) # Have to do this to get RSA (otherwise it's LSP), don't know why... (PS. ijk -> xzy)
             aff = nibabel.affines.from_matvec(mat[:,:3], mat[:,3])
             img = nibabel.Nifti1Image(vol, aff)
-            nibabel.save(img, temp_file)
-            subprocess.check_call(['3dcopy', temp_file, prefix+'+orig', '-overwrite']) # However, still TLRC inside...
-            os.remove(temp_file)
+            if prefix.endswith('.nii'):
+                # https://afni.nimh.nih.gov/afni/community/board/read.php?1,149338,149340#msg-149340
+                # 0 (unknown) sform not defined
+                # 1 (scanner) RAS+ in scanner coordinates
+                # 2 (aligned) RAS+ aligned to some other scan
+                # 3 (talairach) RAS+ in Talairach atlas space
+                # 4 (mni) RAS+ in MNI atlas space
+                img.header['sform_code'] = 1
+                nibabel.save(img, prefix)
+            else:
+                nibabel.save(img, temp_file)
+                subprocess.check_call(['3dcopy', temp_file, prefix+'+orig', '-overwrite']) # However, still TLRC inside...
+                os.remove(temp_file)
         elif method == '3dUndump': # More robust
             temp_file = 'tmp.%s.txt' % next(tempfile._get_candidate_names())
             ijk = np.c_[np.unravel_index(self.index, self.IJK, order='F')]

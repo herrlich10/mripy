@@ -123,8 +123,10 @@ if __name__ == '__main__':
             if args.nudge_cmd is None:
                 init_cmd = '-giant_move'
             else:
-                mat = preprocess.nudge_cmd2mat(args.nudge_cmd, source_file)
-                io.write_affine('tmp.init.1D', mat, oneline=False)
+                mat, inv = preprocess.nudge_cmd2mat(args.nudge_cmd, source_file, return_inverse=True)
+                # io.write_affine('tmp.init.1D', mat, oneline=False)
+                # align_epi_anat.py directly requires the inverse transform (perhaps that's why it is initially stored that way)
+                io.write_affine('tmp.init.1D', inv, oneline=False)
                 init_cmd = f'-pre_matrix tmp.init.1D'
             !align_epi_anat.py -cost {args.cost} {init_cmd} \
                 -dset1to2 -dset1 {source_file} -dset2 {base_file} \
