@@ -5,10 +5,19 @@ import os, glob, shutil, shlex, re, subprocess, multiprocessing, warnings
 from os import path
 from collections import OrderedDict
 import numpy as np
+from numpy.polynomial import polynomial
+from scipy import stats
+from scipy.ndimage import interpolation
+from sklearn import mixture
 try:
     import pandas as pd
 except ImportError:
     warnings.warn('Cannot import pandas, which is required for some functions.', ImportWarning)
+import matplotlib.pyplot as plt
+try:
+    import seaborn as sns
+except ImportError:
+    warnings.warn('Cannot import seaborn, which is required for some functions.', ImportWarning)
 from . import six, afni, io, utils, dicom, dicom_report, math
 
 
@@ -221,7 +230,14 @@ def combine_affine_transforms(transforms, out_file=None):
     return outputs
 
 
+def is_affine_transform(fname):
+    return fname.endswith('.1D')
+
+
 def apply_transforms(transforms, base_file, in_file, out_file, interp=None, res=None, save_xform=None):
+    '''
+    Note that last transform applys first, as in AFNI.
+    '''
     if isinstance(transforms, six.string_types):
         transforms = [transforms]
     if interp is None:
@@ -230,9 +246,8 @@ def apply_transforms(transforms, base_file, in_file, out_file, interp=None, res=
     outputs = {'out_file': f"{prefix}{ext}"}
     if save_xform is not None:
         outputs['xform_file'] = save_xform
-
     
-    has_nwarp = not np.all([f.endswith('.1D') for f in transforms])
+    has_nwarp = not np.all([is_affine_transform(f) for f in transforms])
     res_cmd = f"-newgrid {res}" if res is not None else ''
     if has_nwarp:
         transform_list = ' '.join(transforms)
@@ -302,8 +317,13 @@ def manual_transform(in_file, out_file, shift=None, rotate=None, scale=None, she
 def nudge_cmd2mat(nudge_cmd, in_file, return_inverse=False):
     '''
     Refer to "Example 4"@SUMA_AlignToExperiment for details.
+    
+    The 1st return (MAT) is what you want to write as 'src2base.aff12.1D' and use 
+    apply_transforms to get the same effect as your manual nudge. Remember, the 
+    AFNI way is to store inverse matrix under forward name (to "pull" data from src).
+    So the mathematical map from moveable to tempalte is in the 2nd return (INV).
     '''
-    match = re.search(r'(-?\d+\.\d{2}I) (-?\d+\.\d{2}R) (-?\d+\.\d{2}A).*(-?\d+\.\d{2}S) (-?\d+\.\d{2}L) (-?\d+\.\d{2}P)', nudge_cmd)
+    match = re.search(r'(-?\d+\.\d{2}I) (-?\d+\.\d{2}R) (-?\d+\.\d{2}A)\D+(-?\d+\.\d{2}S) (-?\d+\.\d{2}L) (-?\d+\.\d{2}P)', nudge_cmd)
     if match:
         I, R, A, S, L, P = match.groups()
         temp_file = utils.temp_prefix(suffix='.nii')
@@ -464,6 +484,7 @@ def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kw
     all_finished(outputs)
     return outputs
 
+
 def prep_mp2rage(dicom_dirs, out_file='T1.nii', unwarp=False, dicom_ext='.IMA'):
     '''Convert dicom files and remove the noise pattern outside the brain.
 
@@ -582,7 +603,7 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=False, V1=True):
     os.rename(outputs['suma_dir'], outputs['suma_dir']+'_woNIFTI')
     create_suma_dir(out_dir, NIFTI=True)
     os.rename(outputs['suma_dir'], outputs['suma_dir']+'_NIFTI')
-    os.symlink('SUMA'+('_NIFTI' if NIFTI else '_woNIFTI'), outputs['suma_dir'])
+    os.symlink('SUMA'+('_NIFTI' if NIFTI else '_woNIFTI'), outputs['suma_dir']) # This will create a relative link
 
     shutil.rmtree(temp_dir)
     all_finished(outputs)
@@ -604,6 +625,88 @@ def create_suma_dir(subj_dir, NIFTI=False):
         fo.write(f"suma -spec {subj}_both.spec -sv {subj}_SurfVol{'.nii' if NIFTI else '+orig'} &\n")
     all_finished(outputs)
     return outputs
+
+
+def irregular_resample(transforms, xyz, in_file, order=3):
+    '''
+    Parameters
+    ----------
+    transforms : list of str
+        In order to project raw EPI in volume (in RAI) to surface coordinates (in LPI aka RAS+),
+        i.e., surf_xyz = [dicom2nifti, exp2surf, volreg2template, unwarp2template, ijk2xyz] @ ijk,
+        what we really do is mapping backward from xyz (assumed already in RAI):
+        xyz -> E2A storing inv(exp2surf) -> ... -> inv(MAT).
+    xyz : Nx3 array, assumed in DICOM RAI as with AFNI volumes.
+        Note that FreeSurfur surface vertices are in NIFTI LPI aka RAS+, 
+        whereas AFNI uses DICOM RAI internally.
+    '''
+    vol, xyz2ijk = (io.read_vol(in_file), math.invert_affine(afni.get_affine(in_file))) \
+        if isinstance(in_file, six.string_types) else in_file
+    transforms = [(io.read_affine(f) if is_affine_transform(f) else io.read_warp(f)) \
+        if isinstance(f, six.string_types) else f for f in transforms]
+    transforms += [xyz2ijk, None] # 'None' makes the end of all transforms
+    xyz = xyz.T # For easier algebraic manipulation
+    mat = None
+    for xform in transforms:
+        if xform is not None and not isinstance(xform, tuple):
+            # Accumulate linear transforms into a combined affine matrix
+            mat = xform if mat is None else math.concat_affine(xform, mat)
+        else:
+            # Apply accumulated linear transforms until now all at once
+            xyz = math.apply_affine(mat, xyz)
+            mat = None
+            if xform is not None:
+                # Apply non-linear transform
+                dX, dY, dZ, iMAT = xform
+                dx = interpolation.map_coordinates(dX, math.apply_affine(iMAT, xyz))
+                dy = interpolation.map_coordinates(dY, math.apply_affine(iMAT, xyz))
+                dz = interpolation.map_coordinates(dZ, math.apply_affine(iMAT, xyz))
+                xyz = xyz + np.array([dx, dy, dz]) # Note the sign here
+    v = interpolation.map_coordinates(vol, xyz, order=order, mode='constant', cval=0.0)
+    return v
+
+
+def resample_to_surface(transforms, surfaces, in_file, out_files=None, jobs=1, **kwargs):
+    '''
+    Examples
+    --------
+    resample_to_surface(transforms=[f'SurfVol_Alnd_Exp.E2A.1D', f'epi{run}.volreg.aff12.1D', f'epi{run}.volreg.warp.nii'], 
+        surfaces=[f'{suma_dir}/lh.pial.asc', f'{suma_dir}/rh.smoothwm.asc'], in_file=f'epi{run}.tshift.nii')
+    '''
+    if out_files is None:
+        def out_files(in_file, surf_file):
+            out_dir, prefix = afni.split_out_file(in_file, split_path=True, trailing_slash=True)[:2]
+            return f"{out_dir}{prefix.split('.')[0]}.{'.'.join(path.basename(surf_file).split('.')[:2])}.niml.dset"
+    if callable(out_files):
+        out_files = [out_files(in_file, surf_file) for surf_file in surfaces]
+    # TODO: Eliminate code copy and paste!
+    vol, xyz2ijk = (io.read_vol(in_file), math.invert_affine(afni.get_affine(in_file))) \
+        if isinstance(in_file, six.string_types) else in_file
+    transforms = [(io.read_affine(f) if is_affine_transform(f) else io.read_warp(f)) \
+        if isinstance(f, six.string_types) else f for f in transforms]
+    if vol.ndim == 3: # For non 3D+t dset
+        vol = vol[...,np.newaxis]
+    pc = utils.PooledCaller(pool_size=jobs)
+    for sid, surf_file in enumerate(surfaces):
+        print(f">> Mapping {path.basename(in_file)} onto {path.basename(surf_file)}...")
+        verts = io.read_surf_mesh(surf_file)[0]
+        xyz = verts * np.r_[-1,-1,1] # From FreeSurfer's RAS+ to AFNI/DICOM's RAI
+        if jobs == 1:
+            v = np.zeros(shape=[xyz.shape[0], vol.shape[-1]])
+            for vid in range(vol.shape[-1]):
+                xforms = [xform[vid] if isinstance(xform, np.ndarray) and xform.ndim==3 else xform for xform in transforms]
+                v[:,vid] = irregular_resample(xforms, xyz, (vol[...,vid], xyz2ijk), **kwargs)
+        else:
+            # Potential bug: For large dataset, this is strangely slow (even with only 1 job, is still 7x slower than non-shared version)
+            v = utils.SharedMemoryArray.zeros(shape=[xyz.shape[0], vol.shape[-1]]) # lock=False won't speed it up
+            def work(v, vids, transforms, xyz, vol, xyz2ijk):
+                for vid in vids:
+                    xforms = [xform[vid] if isinstance(xform, np.ndarray) and xform.ndim==3 else xform for xform in transforms]
+                    v[:,vid] = irregular_resample(xforms, xyz, (vol[...,vid], xyz2ijk), **kwargs)
+            for vids in pc.idss(vol.shape[-1], int(np.ceil(vol.shape[-1]/pc.pool_size))):
+                pc.run(work, v, vids, transforms, xyz, vol, xyz2ijk)
+            pc.wait()
+        io.write_niml_bin_nodes(out_files[sid], np.arange(v.shape[0]), v)
 
 
 def deoblique(in_file, out_file=None, template=None):
@@ -666,8 +769,155 @@ def create_brain_mask(in_files, out_file):
     shutil.rmtree(temp_dir)
 
 
+def create_vessel_mask_BOLD(beta, out_file, th=10):
+    prefix, ext = afni.split_out_file(out_file)
+    outputs = {
+        'out_file': f"{prefix}{ext}",
+    }
+    utils.run(f"3dcalc -a {beta} -expr 'step(a-{th})' -prefix {outputs['out_file']} -overwrite")
+    all_finished(outputs)
+    return outputs
+
+
+def create_vessel_mask_EPI(mean_epi, ribbon, out_file, corr_file=None, th=None):
+    '''
+    Find vessel voxels based on bias-corrected EPI intensity (Kay's method).
+    The result may also highlight misalignment between EPI and T1, as well as 
+    errors in pial surface reconstruction.
+
+    Parameters
+    ----------
+    mean_epi : str
+    ribbon : str
+        Mask for gray matter which is aligned with mean_epi.
+    th : float or 'auto', default 0.75 (as in [1])
+
+    References
+    ----------
+    [1] Kay, K., Jamison, K. W., Vizioli, L., Zhang, R., Margalit, E., & Ugurbil, K. (2019). A critical assessment of data quality and venous effects in sub-millimeter fMRI. NeuroImage, 189, 847–869.
+    '''
+    out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True, trailing_slash=True)
+    outputs = {
+        'out_file': f"{out_dir}{prefix}{ext}",
+        'corr_file': f"{out_dir}{afni.split_out_file(mean_epi, split_path=True)[1]}.bias_corr{ext}" \
+            if corr_file is None else corr_file,
+        'auto_th': np.nan,
+        'inspect_file': f"{out_dir}{prefix}.png",
+    }
+    # Fit 3D polynomial trend of EPI intensity using ridge regression
+    ribbon = io.Mask(ribbon)
+    epi = ribbon.dump(mean_epi)
+    x, p, z = ribbon.xyz.T
+    c = math.polyfit3d(x, p, z, epi, deg=4, method='ridge') # (ridge, deg=4) outperforms (ols, deg=4), similar to (ols, deg=2)
+    fitted = polynomial.polyval3d(x,p, z, c)
+    divided = epi/fitted
+    # Fit Gaussian mixture model to determine the threshold to classify "dark voxels" as vessels
+    model = mixture.GaussianMixture(n_components=2)
+    model.fit(divided.reshape(-1,1))
+    comps = np.argsort(model.means_.ravel()) # Components as sorted by mean value (ascending)
+    x = np.arange(0, 1, 0.001)
+    p = model.predict_proba(x.reshape(-1,1))
+    outputs['auto_th'] = x[np.argmin(np.abs(p[:,comps[0]] - p[:,comps[1]]))]
+    if th is None:
+        th = 0.75 # {Kay2019}
+    elif th == 'auto':
+        th = outputs['auto_th']
+    # Save vessel mask
+    ribbon.undump(outputs['out_file'], divided<th)
+    ribbon.undump(outputs['corr_file'], divided)
+    # Save inspect figure
+    sns.distplot(divided, color='purple', hist=False)
+    predicted = model.predict(divided.reshape(-1,1))
+    p1 = np.array([np.sum(predicted==k)/len(predicted) for k in range(model.n_components)]) # Probability of generating a specific class label
+    x = np.arange(0, 2, 0.01)
+    p2 =  np.array([stats.norm.pdf(x, loc=model.means_[k], scale=np.sqrt(model.covariances_[k,0,0])) for k in range(model.n_components)]).T # Probability of generating an intensity level given class label
+    p = p1 * p2
+    with sns.plotting_context('talk'):
+        for k, comp in enumerate(comps):    
+            plt.plot(x, p[:,comp], color=['C3', 'C0', 'C2'][k])
+        plt.xlim(0, 2)
+        plt.axvline(outputs['auto_th'], color='purple', ls='--')
+        plt.axvline(th, color='purple')
+        plt.xlabel('Bias-corrected EPI intensity')
+        plt.ylabel('$p(x)$')
+        plt.text(th-0.1, 2, f'th = {th:.3g}', ha='right')
+        plt.title("Kay's method to find vessels")
+        sns.despine()
+        plt.savefig(outputs['inspect_file'], bbox_inches='tight')
+
+    all_finished(outputs)
+    return outputs
+
+
+def create_vessel_mask_PDGRE(PD, GRE, out_file, PD_div_GRE=None, ath=300, rth=5, nath=100, nrth=-5, base_file=None, strip_PD=True, strip_GRE=True):
+    '''
+    Find vessel voxels based on PD/GRE contrast.
+
+    Parameters
+    ----------
+    PD : str, aligned with EXP
+    GRE : str, aligned with PD
+    ath : float
+        Global absolute threshold for PD/GRE
+    rth : float
+        Local (within neighborhood) relative deviation for PD/GRE
+    '''
+    out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True, trailing_slash=True)
+    outputs = {
+        'out_file': f"{out_dir}{prefix}{ext}",
+        'PD_div_GRE': f"{out_dir}PD_div_GRE{ext}" if PD_div_GRE is None else PD_div_GRE,
+        'PD_div_GRE_dev': f"{out_dir}PD_div_GRE_dev{ext}" \
+            if PD_div_GRE is None else afni.insert_suffix(PD_div_GRE, '_dev'),
+    }
+    temp_dir = utils.temp_folder()
+    pc = utils.PooledCaller()
+    # Brain mask
+    if strip_PD:
+        pc.run(skullstrip, PD, f"{temp_dir}/PD_ns.nii")
+    else:
+        pc.run(f"3dcopy {PD} {temp_dir}/PD_ns.nii -overwrite")
+    if strip_GRE:
+        pc.run(skullstrip, GRE, f"{temp_dir}/GRE_ns.nii")
+    else:
+        pc.run(f"3dcopy {GRE} {temp_dir}/GRE_ns.nii -overwrite")
+    pc.wait()
+    utils.run(f"3dcalc -a {temp_dir}/PD_ns.nii -b {temp_dir}/GRE_ns.nii \
+        -expr 'min(step(a),step(b))' -prefix {temp_dir}/brain_mask.nii -overwrite")
+    # Resample according to base
+    if base_file is not None:
+        pc.run(f"3dresample -rmode Cu -master {base_file} -prefix {temp_dir}/PD_resam.nii -overwrite -input {PD}")
+        pc.run(f"3dresample -rmode Cu -master {base_file} -prefix {temp_dir}/GRE_resam.nii -overwrite -input {GRE}")
+        pc.run(f"3dresample -rmode Cu -master {base_file} -prefix {temp_dir}/brain_mask.nii -overwrite -input {temp_dir}/brain_mask.nii")
+        pc.wait()
+        PD = f"{temp_dir}/PD_resam.nii"
+        GRE = f"{temp_dir}/GRE_resam.nii"
+        utils.run(f"3dcalc -a {temp_dir}/brain_mask.nii -expr 'step(a-0.5)' -prefix {temp_dir}/brain_mask.nii -overwrite")
+    # PD/GRE global absolute value
+    utils.run(f"3dcalc -a {PD} -b {GRE} -expr 'a/b*100' -datum float -prefix {outputs['PD_div_GRE']} -overwrite")
+    # PD/GRE local relative deviation
+    pc.run(f"3dLocalstat -nbhd 'SPHERE(5)' -mask {temp_dir}/brain_mask.nii -stat median \
+        -prefix {temp_dir}/PD_div_GRE_med.nii -overwrite {outputs['PD_div_GRE']}") # SPHERE(radius) is mm
+    pc.run(f"3dLocalstat -nbhd 'SPHERE(5)' -mask {temp_dir}/brain_mask.nii -stat MAD \
+        -prefix {temp_dir}/PD_div_GRE_mad.nii -overwrite {outputs['PD_div_GRE']}")
+    pc.wait()
+    utils.run(f"3dcalc -a {outputs['PD_div_GRE']} -b {temp_dir}/PD_div_GRE_med.nii -c {temp_dir}/PD_div_GRE_mad.nii \
+        -expr '(a-b)/c' -prefix {outputs['PD_div_GRE_dev']} -overwrite")
+    # Use both global absolute value and local (within neighborhood) relative deviation
+    # (subtract local median and divide local MAD) to construct suprathreshold mask
+    # Note that the mask can be either 1 or -1
+    utils.run(f"3dcalc -a {outputs['PD_div_GRE']} -r {outputs['PD_div_GRE_dev']} -m {temp_dir}/brain_mask.nii \
+        -expr 'max(step(a-{ath}),step(r-{rth}))*m-max(step({nath}-a),step({nrth}-r))*m' \
+        -prefix {outputs['out_file']} -overwrite")
+
+    shutil.rmtree(temp_dir)
+    all_finished(outputs)
+    return outputs
+
+
 def scale(in_file, out_file, mask_file=None):
-    mean_file = utils.temp_prefix(suffix='.nii')
+    prefix, ext = afni.split_out_file(out_file)
+    outputs = {'out_file': f"{prefix}{ext}"}
+    mean_file = utils.temp_prefix(suffix=ext)
     utils.run(f"3dTstat -mean -prefix {mean_file} -overwrite {in_file}")
     if mask_file is not None:
         utils.run(f"3dcalc -a {in_file} -b {mean_file} -c {mask_file} \
@@ -676,8 +926,10 @@ def scale(in_file, out_file, mask_file=None):
     else:
         utils.run(f"3dcalc -a {in_file} -b {mean_file} \
             -expr 'min(200,a/b*100)*step(a)*step(b)' \
-            -prefix {out_file} -overwrite")
+            -prefix {outputs['out_file']} -overwrite")
     os.remove(mean_file)
+    all_finished(outputs)
+    return outputs
 
 
 def skullstrip(in_file, out_file=None):
@@ -743,7 +995,7 @@ def align_anat(base_file, in_file, out_file, strip_base=True, strip_in=True, met
     if strip_in:
         apply_transforms(outputs['xform_file'], base_file, in_file, outputs['out_file'], interp=interp)
     else:
-        utils.run(f"3dcopy {temp_dir}/out_ns.nii {outputs['out_file']}")
+        utils.run(f"3dcopy {temp_dir}/out_ns.nii {outputs['out_file']} -overwrite")
 
     shutil.rmtree(temp_dir)
     all_finished(outputs)

@@ -76,15 +76,25 @@ if __name__ == '__main__':
     args = parser.parse_args()
     spec = afni.get_suma_info(args.suma)['spec']
     hemis = ['lh', 'rh']
-    prefix = afni.get_prefix(args.base) if args.prefix is None else args.prefix
+    # prefix = afni.get_prefix(args.base) if args.prefix is None else args.prefix
+    if args.prefix is None:
+        prefix, ext = afni.split_out_file(args.base)
+    else:
+        prefix, ext = afni.split_out_file(args.prefix)
     depth_out = prefix + '.depth'
+    depth_out_file = depth_out + ext
     weight_out = prefix + '.weight'
+    weight_out_file = weight_out + ext
     temp_folder = utils.temp_prefix(suffix='')
     os.makedirs(temp_folder)
     pc = utils.PooledCaller(pool_size=args.jobs)
 
+    # Determine surf mesh and surf vol file format
+    suma_subj = afni.get_suma_subj(args.suma)
+    surf_ext = afni.get_surf_type(args.suma)
+
     # Calculate relative depth (equidistance) for current args.base, if necessary (could take hours...)
-    if not utils.exists(depth_out + '+orig.HEAD'): # Prevent unexpected overwrite
+    if not utils.exists(depth_out_file): # Prevent unexpected overwrite
         if args.method.lower() == '3dsurfmask':
             pc = utils.PooledCaller(pool_size=4)
             for hemi in hemis:
@@ -93,7 +103,7 @@ if __name__ == '__main__':
                     n_chunks = max(1, args.jobs//4)
                     # The specific algorithm used by ``3dSurfMask`` requires us to divide the volume
                     # only along the slice dimension, so that the surface remain "closed" within the subvolume.
-                    pc.check_call(utils.parallel_3D, ['3dSurfMask',
+                    pc.run(utils.parallel_3D, ['3dSurfMask',
                         '-spec', spec[hemi],
                         '-surf', surface,
                         '-sv', args.surf_vol,
@@ -101,7 +111,8 @@ if __name__ == '__main__':
                         '-fill_method', 'FAST',
                         '-prefix', '{prefix}', '-overwrite'], 
                         in_file=args.base, prefix=path.join(temp_folder, '.'.join(('tmp', depth_out, hemi, surface))), 
-                        n_jobs=n_chunks, schema=[1,1,n_chunks], fname_mapper={'_out': '_out.d'})
+                        n_jobs=n_chunks, schema=[1,1,n_chunks], fname_mapper={'_out': '_out.d'}, 
+                        _error_pattern='error', _suppress_warning=True)
             pc.wait()
             for hemi in hemis:
                 # Calculate relative depth for the whole volume
@@ -126,24 +137,24 @@ if __name__ == '__main__':
             for hemi in hemis:
                 lamina_names[hemi] = []
                 lamina_files[hemi] = []
-                inner[hemi] = io.read_asc(path.join(args.suma, '{0}.smoothwm.asc'.format(hemi)))
-                outer[hemi] = io.read_asc(path.join(args.suma, '{0}.pial.asc'.format(hemi)))
+                inner[hemi] = io.read_surf_mesh(path.join(args.suma, f'{hemi}.smoothwm{surf_ext}'))
+                outer[hemi] = io.read_surf_mesh(path.join(args.suma, f'{hemi}.pial{surf_ext}'))
                 for k, alpha in enumerate(alphas):
-                    lamina_names[hemi].append('{0}.L{1:02d}.asc'.format(hemi, k))
+                    lamina_names[hemi].append(f'{hemi}.L{k:02d}{surf_ext}')
                     lamina_files[hemi].append(path.join(temp_folder, lamina_names[hemi][k]))
-                    pc.check_call(surface.intermediate_asc, lamina_files[hemi][k], inner[hemi], outer[hemi], alpha, method=args.flavor)
+                    pc.run(surface.intermediate_asc, lamina_files[hemi][k], inner[hemi], outer[hemi], alpha, method=args.flavor)
             pc.wait()
             # Generate spec files
             lamina_spec = {hemi: path.join(temp_folder, 'lamina_{0}.spec'.format(hemi)) for hemi in hemis}
             for hemi in hemis:
-                afni.generate_spec(lamina_spec[hemi], lamina_names[hemi], anat='Y')
+                afni.generate_spec(lamina_spec[hemi], lamina_names[hemi], anat='Y', ext=surf_ext)
             # Project surface to volume
             weight1_files = {}
             for hemi in hemis:
                 weight1_files[hemi] = []
                 for k in range(n_laminae):
                     weight1_files[hemi].append(path.join(temp_folder, '{0}.w{1:02d}+orig.HEAD'.format(hemi, k)))
-                    pc.check_call(['3dSurf2Vol',
+                    pc.run(['3dSurf2Vol',
                         '-spec', lamina_spec[hemi],
                         '-surf_A', lamina_names[hemi][k],
                         '-surf_B', lamina_names[hemi][k+1],
@@ -153,12 +164,12 @@ if __name__ == '__main__':
                         '-f_steps', '20',
                         '-f_index', 'nodes',
                         '-prefix', weight1_files[hemi][k], 
-                        '-overwrite'])
+                        '-overwrite'], _error_pattern='error', _suppress_warning=True)
             pc.wait()
             # Project lamina thickness to volume
             def compute_thickness(fname, inner, outer):
-                vin, fin = io.read_asc(inner)
-                vout, fout = io.read_asc(outer)
+                vin, fin = io.read_surf_mesh(inner)
+                vout, fout = io.read_surf_mesh(outer)
                 d = np.linalg.norm(vout - vin, axis=-1)
                 io.write_1D_nodes(fname, None, d)
             thick_1Ds = {}
@@ -166,14 +177,14 @@ if __name__ == '__main__':
                 thick_1Ds[hemi] = []
                 for k in range(n_laminae):
                     thick_1Ds[hemi].append(path.join(temp_folder, '{0}.t{1:02d}.1D'.format(hemi, k)))
-                    pc.check_call(compute_thickness, thick_1Ds[hemi][k], lamina_files[hemi][k], lamina_files[hemi][k+1])
+                    pc.run(compute_thickness, thick_1Ds[hemi][k], lamina_files[hemi][k], lamina_files[hemi][k+1])
             pc.wait()
             thick_files = {}
             for hemi in hemis:
                 thick_files[hemi] = []
                 for k in range(n_laminae):
                     thick_files[hemi].append(path.join(temp_folder, '{0}.T{1:02d}+orig.HEAD'.format(hemi, k)))
-                    pc.check_call(['3dSurf2Vol',
+                    pc.run(['3dSurf2Vol',
                         '-spec', lamina_spec[hemi],
                         '-surf_A', lamina_names[hemi][k],
                         '-surf_B', lamina_names[hemi][k+1],
@@ -184,7 +195,7 @@ if __name__ == '__main__':
                         '-f_steps', '20',
                         '-f_index', 'nodes',
                         '-prefix', thick_files[hemi][k], 
-                        '-overwrite'])
+                        '-overwrite'], _error_pattern='error', _suppress_warning=True)
             pc.wait()
             # Weighted sum
             weight_files = {}
@@ -192,13 +203,13 @@ if __name__ == '__main__':
                 weight_files[hemi] = []
                 for k in range(n_laminae):
                     weight_files[hemi].append(path.join(temp_folder, '{0}.W{1:02d}+orig.HEAD'.format(hemi, k)))
-                    pc.check_call("3dcalc -a {0} -b {1} -expr 'a*b' -prefix {2} -overwrite".format(
+                    pc.run("3dcalc -a {0} -b {1} -expr 'a*b' -prefix {2} -overwrite".format(
                         weight1_files[hemi][k], thick_files[hemi][k], weight_files[hemi][k]), shell=True)
             pc.wait()
             wsum_files = {}
             for hemi in hemis:
                 wsum_files[hemi] = path.join(temp_folder, '{0}.WSum+orig.HEAD'.format(hemi))
-                pc.check_call(['3dTstat', '-sum', '-prefix', wsum_files[hemi], '-overwrite',
+                pc.run(['3dTstat', '-sum', '-prefix', wsum_files[hemi], '-overwrite',
                     '"{0}"'.format(' '.join(weight_files[hemi]))], shell=True)
             pc.wait()
             depth_files = {}
@@ -206,7 +217,7 @@ if __name__ == '__main__':
                 depth_files[hemi] = []
                 for k in range(n_laminae):
                     depth_files[hemi].append(path.join(temp_folder, '{0}.D{1:02d}+orig.HEAD'.format(hemi, k)))
-                    pc.check_call([
+                    pc.run([
                         '3dcalc', '-a', weight_files[hemi][k], '-b', wsum_files[hemi],
                             '-expr', "'a/b'", '-prefix', weight_files[hemi][k], '-overwrite;',
                         '3dcalc', '-a', weight_files[hemi][k],
@@ -214,7 +225,7 @@ if __name__ == '__main__':
                         ], shell=True)
             pc.wait()
             for hemi in hemis:
-                pc.check_call([
+                pc.run([
                     '3dTstat', '-sum', '-prefix', '{0}/tmp.{1}.{2}'.format(temp_folder, depth_out, hemi), '-overwrite',
                         '"{0}"'.format(' '.join(depth_files[hemi])), ';',
                     '3dTcat', '-prefix', '{0}/tmp.{1}.{2}'.format(temp_folder, weight_out, hemi), '-overwrite',
@@ -223,7 +234,7 @@ if __name__ == '__main__':
             pc.wait()
             # Combine left and right hemisphere for weight
             !3dcalc -l {temp_folder}/tmp.{weight_out}.lh+orig -r {temp_folder}/tmp.{weight_out}.rh+orig \
-                -expr 'max(l,r)' -prefix {weight_out} -overwrite
+                -expr 'max(l,r)' -prefix {weight_out_file} -overwrite
         elif args.method.lower() == 'center_weighted':
             if args.layers[0] != 'L14':
                 raise RuntimeError('>> Sorry, but "center_weighted" method only support "L14" at present...')
@@ -234,14 +245,14 @@ if __name__ == '__main__':
                 d[(d<=-0.2)|(d>=1.2)] = 0
                 mask.undump(prefix, d)
             for hemi in hemis:
-                pc.check_call(compute_depth, path.join(temp_folder, 'tmp.{0}.{1}'.format(depth_out, hemi)), 
-                    path.join(args.suma, '{0}.smoothwm.asc'.format(hemi)),
-                    path.join(args.suma, '{0}.pial.asc'.format(hemi)))
+                pc.run(compute_depth, path.join(temp_folder, 'tmp.{0}.{1}'.format(depth_out, hemi)), 
+                    path.join(args.suma, f'{hemi}.smoothwm{surf_ext}'),
+                    path.join(args.suma, f'{hemi}.pial{surf_ext}'))
             pc.wait()
 
         # Combine left and right hemisphere
         !3dcalc -l {temp_folder}/tmp.{depth_out}.lh+orig -r {temp_folder}/tmp.{depth_out}.rh+orig \
-            -expr 'l+r' -prefix {depth_out} -overwrite
+            -expr 'l+r' -prefix {depth_out_file} -overwrite
 
     # Check successful
     if pc.all_successful():

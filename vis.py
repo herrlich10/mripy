@@ -31,6 +31,7 @@ def draw_color_circle(cmap, res=512):
     cmap.set_bad('gray', alpha=1)
     plt.imshow(A, cmap=cmap)
 
+
 def plot_volreg(dfiles, convention=None):
     '''
     The six columns from left to right are:

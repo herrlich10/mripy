@@ -1,7 +1,7 @@
 #!/usr/bin/env ipython --
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import argparse, os, shutil
+import argparse, os, shutil, glob
 from os import path
 
 
@@ -24,33 +24,38 @@ if __name__ == '__main__':
     else:
         raise RuntimeError('"{0}" already exists! Quit for now...'.format(args.output))
 
+    # Determine surf mesh and surf vol file format
+    hemis = ['lh', 'rh']
+    suma_subj = afni.get_suma_subj(args.input)
+    sv = path.basename(afni.get_surf_vol(args.input))
+    ext = afni.get_surf_type(suma_dir)
+
     # Interpolate surface meshes
     def interp_mesh(fin, fout):
         print('processing {0}...'.format(fin))
         try:
-            verts, faces = io.read_asc(fin)
+            verts, faces = io.read_surf_mesh(fin)
         except ValueError:
             verts, faces = io.read_patch_asc(fin)[:2]
         verts, faces = surface.quadruple_mesh(verts, faces, power=args.power)
-        io.write_asc(fout, verts, faces)
+        io.write_surf_mesh(fout, verts, faces)
     pc = utils.PooledCaller(pool_size=args.jobs)
     for surf in args.surf:
-        for hemi in ['lh', 'rh']:
-            fname = '{0}.{1}.asc'.format(hemi, surf)
+        for hemi in hemis:
+            fname = f"{hemi}.{surf}{ext}"
             pc.run(interp_mesh, path.join(args.input, fname), path.join(args.output, fname))
     pc.wait()
 
     # Create spec files
-    suma_subj = afni.get_suma_subj(args.input)
-    for hemi in ['lh', 'rh']:
-        afni.generate_spec(path.join(args.output, '{0}_{1}.spec'.format(suma_subj, hemi)), ['{0}.{1}.asc'.format(hemi, surf) for surf in args.surf])
-    afni.generate_spec(path.join(args.output, '{0}_both.spec'.format(suma_subj)), ['{0}.{1}.asc'.format(hemi, surf) for surf in args.surf for hemi in ['lh', 'rh']])
-    afni.generate_spec(path.join(args.output, '{0}_view.spec'.format(suma_subj)), ['{0}.{1}.asc'.format(hemi, surf) for surf in ['smoothwm', 'inflated'] for hemi in ['lh', 'rh']])
+    for hemi in hemis:
+        afni.generate_spec(f"{args.output}/{suma_subj}_{hemi}.spec", [f"{hemi}.{surf}{ext}" for surf in args.surf], ext=ext)
+    afni.generate_spec(f"{args.output}/{suma_subj}_both.spec", [f"{hemi}.{surf}{ext}" for surf in args.surf for hemi in hemis], ext=ext)
+    afni.generate_spec(f"{args.output}/{suma_subj}_view.spec", [f"{hemi}.{surf}{ext}" for surf in ['smoothwm', 'inflated'] for hemi in hemis], ext=ext)
 
     # Copy SurfVol from SUMA directory
-    !cp {args.input}/{suma_subj}_SurfVol+orig.* {args.output}
+    !3dcopy {args.input}/{sv} {args.output}/{sv}
 
     # Create viewing scripts for afni and suma
     with open('{0}/run_suma_hd'.format(args.output), 'w') as fout:
         fout.write('afni -niml &\n')
-        fout.write('suma -spec {0}_view.spec -sv {0}_SurfVol+orig &\n'.format(suma_subj))
+        fout.write(f"suma -spec {suma_subj}_view.spec -sv {sv} &\n")

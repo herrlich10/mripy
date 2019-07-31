@@ -111,7 +111,7 @@ def split_out_file(out_file, split_path=False, trailing_slash=False):
     out_dir, out_name = path.split(out_file)
     if trailing_slash and out_dir:
         out_dir += '/'
-    match = re.match(r'(.+)(.nii|.nii.gz|.1D)$', out_name)
+    match = re.match(r'(.+)(.nii|.nii.gz|.1D|.1D.dset|.1D.roi|.niml.dset|.niml.roi)$', out_name)
     if match:
         prefix, ext = match.groups()
     else:
@@ -128,6 +128,9 @@ def split_out_file(out_file, split_path=False, trailing_slash=False):
         return path.join(out_dir, prefix), ext
 
 
+def insert_suffix(fname, suffix):
+    prefix, ext = split_out_file(fname)
+    return f"{prefix}{suffix}{ext}"
 
 
 def get_prefix(fname, with_path=False):
@@ -151,28 +154,47 @@ def get_prefix(fname, with_path=False):
     return prefix
 
 
+def get_surf_vol(suma_dir):
+    '''Infer SUMA SurfVol filename (agnostic about file type: .nii vs +orig.HEAD/BRIK).'''
+    return glob.glob(path.join(suma_dir, '*_SurfVol*'))[0]
+
+
 def get_suma_subj(suma_dir):
-    '''Infer SUMA subject given path to SUMA folder'''
-    try:
-        # spec_file = glob.glob(path.join(suma_dir, 'std.60.*_both.spec'))[0]
-        # return path.basename(spec_file)[7:-10]
-        surf_vol = glob.glob(path.join(suma_dir, '*_SurfVol+orig.HEAD'))[0]
-        return path.basename(surf_vol)[:-18]
-    except IndexError:
-        return None
+    '''Infer SUMA subject given path to SUMA folder.'''
+    match = re.match('(.+)_SurfVol.+', path.basename(get_surf_vol(suma_dir)))
+    if match:
+        return match.group(1)
+    else:
+        raise RuntimeError(f'>> Cannot infer SUMA subject from "{suma_dir}"')
 
 
-HEMI_PATTERN = r'(?<=[^a-zA-Z0-9])(?:lh|rh|both)(?=[^a-zA-Z0-9])|^(?:lh|rh|both)(?=[^a-zA-Z0-9])'
-SPEC_HEMIS = ['lh', 'rh', 'both']
+def get_surf_type(suma_dir):
+    '''Infer SUMA surface mesh file type (.gii vs .asc).'''
+    return path.splitext(glob.glob(path.join(suma_dir, 'lh.pial.*'))[0])[1]
 
-def substitute_hemi(s, hemi='{0}'):
-    return re.sub(HEMI_PATTERN, hemi, s)
+
+SPEC_HEMIS = ['lh', 'rh', 'both', 'mh']
+HEMI_PATTERN = r'(?:(?<=[^a-zA-Z0-9])|^)(?:lh|rh|both|mh)(?=[^a-zA-Z0-9])'
+
+def substitute_hemi(fname, hemi='{0}'):
+    return re.sub(HEMI_PATTERN, hemi, fname)
 
 
 def get_suma_spec(suma_spec):
-    '''Infer other spec files from one spec file (either lh.spec, rh.spec, or both.spec).'''
-    spec_fmt = re.sub('[a-z]+.spec', '{0}.spec', suma_spec)
-    return {hemi: spec_fmt.format(hemi) for hemi in SPEC_HEMIS}
+    '''
+    Infer other spec files from one spec file (either lh.spec, rh.spec, or both.spec).
+    
+    Parameters
+    ----------
+    suma_spec : str
+        Either a .spec file or the suma_dir.
+    '''
+    if path.isdir(suma_spec): # It is actually the `suma_dir`
+        subj = get_suma_subj(suma_spec)
+        return {hemi: path.join(suma_spec, f"{subj}_{hemi}.spec") for hemi in SPEC_HEMIS}
+    else: # It is a .spec file
+        spec_fmt = re.sub('(lh|rh|both|mh).spec', '{0}.spec', suma_spec)
+        return {hemi: spec_fmt.format(hemi) for hemi in SPEC_HEMIS}
 
 
 def get_suma_info(suma_dir, suma_spec=None):
@@ -184,6 +206,28 @@ def get_suma_info(suma_dir, suma_spec=None):
         info['spec'] = get_suma_spec(suma_spec)
     return info
 
+
+def infer_surf_dset_names(fname, hemis=SPEC_HEMIS):
+    '''
+    fname : str, list, or dict
+    '''
+    if isinstance(fname, six.string_types):
+        match = re.search(HEMI_PATTERN, path.basename(fname))
+        if match:
+            fname = {match.group(0): fname}
+        else:
+            out_dir, prefix, ext = split_out_file(fname, split_path=True, trailing_slash=True)
+            fname = {hemi: f"{out_dir}{hemi}.{prefix}{ext}" for hemi in hemis}
+    if not isinstance(fname, dict):
+        fdict = {}
+        for f in fname:
+            match = re.search(HEMI_PATTERN, path.basename(f))
+            if match:
+                fdict[match.group(0)] = f
+            else:
+                raise ValueError(f'** ERROR: Cannot infer "hemi" from "{path.basename(f)}"')
+        fname = fdict
+    return fname
 
 
 def get_ORIENT(fname, format='str'):
@@ -250,6 +294,19 @@ def get_DELTA(fname):
     return DELTA
 
 
+def get_affine(fname):
+    ORIENT = get_ORIENT(fname, format='sorter')
+    ORIGIN = get_ORIGIN(fname)
+    DELTA = get_DELTA(fname)
+    MAT = np.c_[np.diag(DELTA), ORIGIN][ORIENT,:]
+    return MAT
+
+
+def get_affine_nifti(fname):
+    MAT = np.diag([-1,-1, 1]) @ get_affine(fname)
+    return MAT
+
+
 def get_dims(fname):
     '''
     Dimensions (number of voxels) of the data matrix.
@@ -314,13 +371,15 @@ def get_S2E_mat(fname, mat='S2E'):
     return np.float_(res.split()).reshape(3,4)
 
 
-def generate_spec(fname, surfs, **kwargs):
-    defaults = dict(dict(type='FS', state=None, anat=None, parent=None), **kwargs)
+def generate_spec(fname, surfs, ext=None, **kwargs):
+    if ext is None:
+        ext = '.gii'
+    defaults = dict(dict(type={'.asc': 'FS', '.gii': 'GII'}[ext], state=None, anat=None, parent=None), **kwargs)
     surfs = [dict(defaults, **({'name': surf} if isinstance(surf, six.string_types) else surf)) for surf in surfs]
     has_smoothwm = np.any([('smoothwm' in surf['name']) for surf in surfs])
     is_both = np.any([('lh' in surf['name']) for surf in surfs]) and np.any([('rh' in surf['name']) for surf in surfs])
     for surf in surfs:
-        match = re.search(r'([l|r]h)\.(.+)\.asc', surf['name'])
+        match = re.search(rf'([l|r]h)\.(.+)\.{ext[1:]}', surf['name'])
         surf['hemi'] = match.group(1)
         surf['surf'] = match.group(2)
         is_anat = surf['surf'] in ['pial', 'smoothwm', 'white']
@@ -335,7 +394,7 @@ def generate_spec(fname, surfs, **kwargs):
             if surf['name'] == 'smoothwm' or not has_smoothwm:
                 surf['parent'] = 'SAME'
             else:
-                surf['parent'] = '.'.join([surf['hemi'], 'smoothwm', 'asc'])
+                surf['parent'] = '.'.join([surf['hemi'], 'smoothwm', ext[1:]])
     cmds = []
     for surf in surfs:
          cmds.extend(['-tsnad', surf['type'], surf['state'], surf['name'], surf['anat'], surf['parent']])

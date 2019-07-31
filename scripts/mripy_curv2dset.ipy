@@ -48,6 +48,7 @@ if __name__ == '__main__':
     mri_dir = path.join(args.subj_dir, 'mri')
     suma_dir = args.suma_dir if args.suma_dir is not None else path.join(args.subj_dir, 'SUMA')
     
+    # Convert surface datasets
     hemis = ['lh', 'rh']
     pc = utils.PooledCaller()
     print('>> Converting dsets...')
@@ -73,15 +74,15 @@ if __name__ == '__main__':
                 ], shell=True)
     pc.wait()
 
+    # Convert volume datasets
     if convert_mgz:
         print('>> Converting *.mgz files...')
-        surf_vol = path.join(suma_dir, afni.get_suma_subj(suma_dir) + '_SurfVol+orig')
+        surf_vol = afni.get_surf_vol(suma_dir)
         for dset in args.input:
             nii_file = path.join(suma_dir, dset+'.nii.gz')
             # Convert and then shift: according to @SUMA_Make_Spec_FS
             pc.run('''
-                mri_convert --in_type mgz --out_type nii \
-                    {0} {1};
+                mri_convert --in_type mgz --out_type nii {0} {1};
                 @Align_Centers -base {2} -dset {1} -no_cp;
                 '''.format(path.join(mri_dir, dset+'.mgz'), nii_file, surf_vol), shell=True)
         pc.wait()
@@ -95,7 +96,7 @@ if __name__ == '__main__':
         fmesh = {}
         for hemi in hemis:
             print('>> Interpolating dsets for {0}...'.format(hemi))
-            verts, faces = io.read_asc(path.join(suma_dir, mesh_fmt.format(hemi)))
+            verts, faces = io.read_surf_mesh(path.join(suma_dir, mesh_fmt.format(hemi)))
             neighbors = surface.immediate_neighbors(verts, faces, return_array=True) # Data in shared memory 
             fmesh[hemi] = (neighbors, verts.shape[0])
             for dset in args.input:

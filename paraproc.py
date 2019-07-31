@@ -213,7 +213,7 @@ class PooledCaller(object):
         self._fulfilled = {} # Fulfilled dependencies across waits (a faster API compared with self._log)
         self.res_queue = multiprocessing.Queue() # Queue for return values of executed python callables
  
-    def run(self, cmd, *args, _depends=None, _dispatch=False, _error_pattern=None, **kwargs):
+    def run(self, cmd, *args, _depends=None, _dispatch=False, _error_pattern=None, _suppress_warning=False, **kwargs):
         '''Asynchronously run command or callable (queued execution, return immediately).
         
         See subprocess.Popen() for more information about the arguments.
@@ -253,7 +253,7 @@ class PooledCaller(object):
         '''
         cmd = cmd_for_exec(cmd, shell=kwargs)
         _uuid = uuid.uuid4().hex[:8]
-        self.cmd_queue.append((self._n_cmds, cmd, args, kwargs, _uuid, _depends, _error_pattern))
+        self.cmd_queue.append((self._n_cmds, cmd, args, kwargs, _uuid, _depends, _error_pattern, _suppress_warning))
         self._n_cmds += 1 # Accumulate by each call to run(), and reset after wait()
         if _dispatch:
             self.dispatch()
@@ -278,13 +278,13 @@ class PooledCaller(object):
             output = out.getvalue().splitlines(True) + err.getvalue().splitlines(True)
             self.res_queue.put([idx, res, output]) # Communicate return value and output (Caution: The underlying pipe has limited size. Have to get() soon in wait().)
 
-    def _async_reader(self, idx, f, output_list, speed_up):
+    def _async_reader(self, idx, f, output_list, speed_up, suppress_warning=False):
         while True: # We can use event to tell the thread to stop prematurely, as demonstrated in https://stackoverflow.com/questions/323972/is-there-any-way-to-kill-a-thread
             line = f.readline()
             line = line.decode('utf-8')
             if line: # This is not lock protected, because only one thread (i.e., this thread) is going to write
                 output_list.append(line)
-                if line.startswith('*') or line.startswith('\x1b[7m'): # Always print AFNI style WARNING and ERROR through stderr
+                if (line.startswith('*') or line.startswith('\x1b[7m')) and not suppress_warning: # Always print AFNI style WARNING and ERROR through stderr unless explicitly suppressed
                     # '\x1b[7m' and '\x1b[0m' are 'reverse' and 'reset' respectively (https://gist.github.com/abritinthebay/d80eb99b2726c83feb0d97eab95206c4)
                     print('>> Something happens in job#{0}'.format(idx), file=sys.stderr)
                     print(line, end='', file=sys.stderr)
@@ -299,9 +299,10 @@ class PooledCaller(object):
         # If there are free slot and more jobs
         # while len(self.ps) < self.pool_size and len(self.cmd_queue) > 0:
         if len(self.ps) < self.pool_size and len(self.cmd_queue) > 0:
-            idx, cmd, args, kwargs, _uuid, _depends, _error_pattern = self.cmd_queue.pop(0)
+            idx, cmd, args, kwargs, _uuid, _depends, _error_pattern, _suppress_warning = self.cmd_queue.pop(0)
             if _depends is None or all([dep in self._fulfilled for dep in _depends]): # No dependency or all fulfilled
-                job = {'idx': idx, 'cmd': cmd_for_disp(cmd), 'output': [], 'error_pattern': _error_pattern} # Create a job process only after it is popped from the queue
+                job = {'idx': idx, 'cmd': cmd_for_disp(cmd), 'output': [], 'error_pattern': _error_pattern , 
+                    'suppress_warning': _suppress_warning} # Create a job process only after it is popped from the queue
                 if self.verbose > 0:
                     print('>> job#{0}: {1}'.format(idx, job['cmd']))
                 if callable(cmd):
@@ -313,7 +314,8 @@ class PooledCaller(object):
                     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
                     # Capture output without blocking (the main thread) by using a separate thread to do the blocking readline()
                     job['speed_up'] = threading.Event()
-                    job['watcher'] = threading.Thread(target=self._async_reader, args=(idx, p.stdout, job['output'], job['speed_up']), daemon=True)
+                    job['watcher'] = threading.Thread(target=self._async_reader, args=(idx, p.stdout, 
+                        job['output'], job['speed_up'], job['suppress_warning']), daemon=True)
                     job['watcher'].start()
                 self.ps.append(p)
                 job['start_time'] = time.time()
@@ -350,6 +352,10 @@ class PooledCaller(object):
         jobs : list (only when return_jobs=True)
             Detailed information about each child process, including captured stdout and stderr.
         '''
+        if isinstance(pool_size, string_types) and pool_size == 'balanced':
+            # Make sure each volley has roughly equal number of jobs
+            n = len(self.cmd_queue)
+            pool_size = int(np.ceil(n/np.ceil(n/self.pool_size)))
         if pool_size is not None:
             # Allow temporally adjust pool_size for current batch of jobs
             old_size = self.pool_size

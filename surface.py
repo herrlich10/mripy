@@ -1,10 +1,10 @@
     #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import subprocess, ctypes, multiprocessing
+import os, shutil, ctypes, multiprocessing
+from os import path
 from itertools import chain
 from scipy import spatial
-from os import path
 import numpy as np
 from . import six, afni, io, utils
 
@@ -128,7 +128,7 @@ def interp_dset(fdset, fmesh, prefix):
     '''
     indices, values = io.read_niml_bin_nodes(fdset)
     if isinstance(fmesh, six.string_types):
-        verts, faces = io.read_asc(fmesh)
+        verts, faces = io.read_surf_mesh(fmesh)
         new_val = interp_over_mesh(verts, faces, indices, values)
     else: # fmesh = (neighbors, n_verts), for shared memory parallelism
         new_val = interp_over_mesh(None, None, indices, values, neighbors=fmesh[0], n_verts=fmesh[1])
@@ -175,8 +175,8 @@ def smooth_verts_data(verts, faces, data, factor=0.1, n_iters=1, dtype=None):
 
 def compute_intermediate_mesh(inner, outer, alpha, method='equivolume', dtype=None):
     alpha = np.array(alpha, dtype=dtype).reshape(-1, 1)
-    vin, fin = io.read_asc(inner, dtype=dtype) if isinstance(inner, six.string_types) else inner
-    vout, fout = io.read_asc(outer, dtype=dtype) if isinstance(outer, six.string_types) else outer
+    vin, fin = io.read_surf_mesh(inner, dtype=dtype) if isinstance(inner, six.string_types) else inner
+    vout, fout = io.read_surf_mesh(outer, dtype=dtype) if isinstance(outer, six.string_types) else outer
     Ain = compute_verts_area(vin, fin, dtype=dtype)
     Aout = compute_verts_area(vout, fout, dtype=dtype)
     if method in ['equivolume', 'equivolume_inside']:
@@ -260,8 +260,8 @@ def compute_voxel_depth(xyz, inner, outer, S2E_mat, method='equivolume', n_jobs=
                     depths[k] = w * alphas[didx+1] + (1-w) * alphas[didx]
     with lock:
         pc = utils.PooledCaller(pool_size=n_jobs)
-        pc(pc.check_call(compute_depth, ids, depths, xyz, kdt, verts, faces, alphas, n_faces, n_depths, min_depth, max_depth) 
-            for ids in pc.batches(len(depths)))
+        pc(pc.run(compute_depth, ids, depths, xyz, kdt, verts, faces, alphas, n_faces, n_depths, min_depth, max_depth) 
+            for ids in pc.idss(len(depths)))
     return depths
 
 
@@ -269,7 +269,7 @@ def intermediate_asc(fname, inner, outer, alpha, method='equivolume'):
     if method == 'equivolume':
         method = 'equivolume_inside'
     verts, faces = compute_intermediate_mesh(inner, outer, alpha, method=method)
-    io.write_asc(fname, verts, faces)
+    io.write_surf_mesh(fname, verts, faces)
 
 
 def dset2roi(f_dset, f_roi=None, colors=None):
@@ -291,22 +291,18 @@ def dset2roi(f_dset, f_roi=None, colors=None):
 
 class Surface(object):
     def __init__(self, suma_dir, surf_vol=None):
-        self.surf_dir = suma_dir
-        self.subj = afni.get_suma_subj(self.surf_dir)
-        if surf_vol is None:
-            self.surf_vol = 'SurfVol_Alnd_Exp+orig.HEAD'
-            # self.surf_vol = path.join(self.surf_dir, self.subj + '_SurfVol+orig.HEAD')
-        else:
-            self.surf_vol = surf_vol
+        self.suma_dir = suma_dir
+        self.surf_vol = 'SurfVol_Alnd_Exp.nii' if surf_vol is None else surf_vol
+        self.specs = afni.get_suma_spec(self.suma_dir)
+        self.subj = afni.get_suma_subj(self.suma_dir)
         self.surfs = ['pial', 'smoothwm', 'inflated', 'sphere.reg']
         self.hemis = ['lh', 'rh']
-        self.specs = [path.join(self.surf_dir, '{0}_{1}.spec'.format(self.subj, hemi)) for hemi in self.hemis]
 
     def _get_surf2exp_transform(self, exp_anat):
         pass
 
     def _get_spherical_coordinates(self, hemi):
-        verts = io.read_asc(path.join(self.surf_dir, '{hemi}.sphere.reg.asc'.format(hemi=hemi)))[0]
+        verts = io.read_surf_mesh(path.join(self.suma_dir, '{hemi}.sphere.reg.asc'.format(hemi=hemi)))[0]
         theta = np.arccos(verts[:,2]/100) # Polar (inclination) angle, [0,pi]
         phi = np.arctan2(verts[:,1], verts[:,0]) # Azimuth angle, (-pi,pi]
         return theta, phi
@@ -314,29 +310,98 @@ class Surface(object):
     def to_1D_dset(self, prefix, node_values, hemi):
         np.savetxt('{0}.{1}.1D.dset'.format(prefix, hemi), np.c_[np.arange(len(node_values)), node_values])
 
-    def to_vol_dset(self, prefix, surf_dset, grid_parent=None):
-        if grid_parent is None:
-            grid_parent = self.surf_vol
-        tmp_out = []
-        pc = utils.ParallelCaller()
-        for k, dset in enumerate(surf_dset):
-            tmp_out.append('tmp.{0}.{1}+orig.HEAD'.format(self.hemis[k], prefix))
-            cmd = ['3dSurf2Vol',
-                '-spec', self.specs[k],
-                '-surf_A', 'smoothwm',
-                '-surf_B', 'pial',
-                '-sv', self.surf_vol,
-                '-grid_parent', grid_parent,
-                '-sdata_1D', dset,
-                '-f_steps', '13',
-                '-f_p1_fr', '-0.0',
-                '-f_pn_fr', '0.0',
-                '-map_func', 'ave',
-                '-prefix', tmp_out[k], '-overwrite']
-            pc.check_call(cmd)
+
+    def vol2surf(self, in_file, out_file, func='median', depth_range=[0,1], mask_file=None, truncate=False):
+        '''
+        Parameters
+        ----------
+        in_file : str, "beta.nii"
+        out_file : str, "beta.niml.dset" will generate ["lh.beta.niml.dset", "rh.beta.niml.dset"]
+        func : str
+            ave, median, mask, midpoint, etc.
+
+        About "-f_index nodes"
+        ----------------------
+        [1] https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dVol2Surf.html
+            When taking the average along one node pair segment using 10 node steps,
+            perhaps 3 of those nodes may occupy one particular voxel.  In this case, 
+            does the user want the voxel counted only once (-f_index voxels), 
+            or 3 times (-f_index nodes)?  Each way makes sense.
+        '''
+        mask_cmd = f"-cmask {mask_file}" if mask_file is not None else ''
+        truncate_cmd = f"-oob_value 0 {'-oom_value 0' if mask_file is not None else ''}" if not truncate else ''
+        out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True, trailing_slash=True)
+        output_1D = '.1D' in ext
+        pc = utils.PooledCaller()
+        for hemi in self.hemis:
+            fo_niml = f"{out_dir}{hemi}.{prefix}.niml.dset"
+            fo_1D = f"{out_dir}{hemi}.{prefix}.1D.dset"
+            out_1D_cmd = f"-out_1D {fo_1D}" if output_1D else ''
+            pc.run(f"3dVol2Surf \
+                -spec {self.specs[hemi]} \
+                -surf_A smoothwm \
+                -surf_B pial \
+                -sv {self.surf_vol} \
+                -grid_parent {in_file} \
+                {mask_cmd} {truncate_cmd} \
+                -map_func {func} \
+                -f_steps 20 -f_index nodes \
+                -f_p1_fr {depth_range[0]} -f_pn_fr {depth_range[1]-1} \
+                -out_niml {fo_niml} {out_1D_cmd} -overwrite", 
+                _error_pattern='error', _suppress_warning=True)
         pc.wait()
-        subprocess.check_call(['3dcalc', '-l', tmp_out[0], '-r', tmp_out[1], '-expr', 'max(l,r)', 
-            '-prefix', prefix, '-overwrite'])
+
+
+    def surf2vol(self, base_file, in_files, out_file, func='median', combine='max(l,r)', depth_range=[0,1], mask_file=None):
+        '''
+        Parameters
+        ----------
+        in_files : str, list, or dict
+            "beta.niml.dset" will be expanded as ["lh.beta.niml.dset", "rh.beta.niml.dset"],
+            whereas "lh.beta.niml.dset" will be treated as is.
+        func : str
+            ave, median, mask2, count, etc.
+        combine : str
+            l+r, max(l,r), consistent, etc.
+
+        About "-f_index nodes"
+        ----------------------
+        [1] https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dSurf2Vol.html
+            Current setting may be preferred if the user wishes to have the average 
+            weighted by the number of points occupying a voxel (-f_index nodes), 
+            not just the number of node pair segments (-f_index voxels).
+        '''
+        in_files = afni.infer_surf_dset_names(in_files, hemis=self.hemis)
+        mask_cmd = f"-cmask {mask_file}" if mask_file is not None else ''
+        temp_dir = utils.temp_folder()
+        pc = utils.PooledCaller()
+        for hemi, dset in in_files.items():
+            prefix, ext = afni.split_out_file(dset)
+            input_cmd = f"-sdata_1D {dset}" if '.1D' in ext else f"-sdata {dset}"
+            pc.run(f"3dSurf2Vol \
+                -spec {self.specs[hemi]} \
+                -surf_A smoothwm \
+                -surf_B pial \
+                -sv {self.surf_vol} \
+                -grid_parent {base_file} \
+                {input_cmd} {mask_cmd} \
+                -map_func {func} \
+                -f_steps 20 -f_index nodes \
+                -f_p1_fr {depth_range[0]} -f_pn_fr {depth_range[1]-1} \
+                -prefix {temp_dir}/{hemi}.nii -overwrite", 
+                _error_pattern='error', _suppress_warning=True)
+        pc.wait()
+        if len(in_files) > 1:
+            if combine == 'consistent':
+                utils.run(f"3dcalc -l {temp_dir}/lh.nii -r {temp_dir}/rh.nii \
+                    -expr 'notzero(l)*iszero(r)*l+iszero(l)*notzero(r)*r+notzero(l)*notzero(r)*equals(l,r)*l' \
+                    -prefix {out_file} -overwrite")
+            else:
+                utils.run(f"3dcalc -l {temp_dir}/lh.nii -r {temp_dir}/rh.nii \
+                    -expr '{combine}' -prefix {out_file} -overwrite")
+        else:
+            utils.run(f"3dcopy {temp_dir}/{hemi}.nii {out_file} -overwrite")
+        shutil.rmtree(temp_dir)
 
 
 if __name__ == '__main__':

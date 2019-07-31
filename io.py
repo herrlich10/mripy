@@ -8,7 +8,7 @@ import random, string
 from os import path
 from datetime import datetime
 import numpy as np
-from . import six, utils, afni, paraproc
+from . import six, utils, afni, math, paraproc
 # For accessing NIFTI files
 try:
     import nibabel
@@ -639,13 +639,50 @@ def convert_dicoms(dicom_dirs, out_dir=None, prefix=None, out_type='.nii', dicom
             convert_dicom(f, path.join(out_dir, '*'+out_type if prefix is None else '{0}{1:02d}{2}'.format(prefix, idx, out_type)), dicom_ext=dicom_ext, **kwargs)
 
 
-# Volume data
+# Generic read/write
 def read_vol(fname, return_img=False):
     img = nibabel.load(fname)
     vol = img.get_data()
     return (vol, img) if return_img else vol
 
 
+def write_vol(fname, vol, base_img=None):
+    pass
+
+
+def read_surf_mesh(fname, return_img=False, **kwargs):
+    if fname.endswith('.asc'):
+        verts, faces = read_asc(fname, **kwargs)
+        img = None
+    elif fname.endswith('.gii'):
+        verts, faces, img = read_gii(fname, return_img=True)
+    return (verts, faces, img) if return_img else (verts, faces)
+
+
+def write_surf_mesh(fname, verts, faces, **kwargs):
+    if fname.endswith('.asc'):
+        write_asc(fname, verts, faces, **kwargs)
+    elif fname.endswith('.gii'):
+        write_gii(fname, verts, faces, **kwargs)
+
+
+def read_txt(fname, dtype=float, comment='#', delimiter=None, skiprows=0, nrows=None, return_comments=False):
+    '''Read numerical array from text file, much faster than np.loadtxt()'''
+    with open(fname, 'r') as fin:
+        lines = fin.readlines()
+    if return_comments:
+        comments = [line for line in lines[skiprows:] if line.strip() and line.startswith(comment)]
+    lines = [line for line in lines[skiprows:(nrows if not nrows else skiprows+nrows)] if line.strip() and not line.startswith(comment)]
+    n_cols = len(lines[0].split(delimiter))
+    x = np.fromiter(itertools.chain.from_iterable(
+        map(lambda line: line.split(delimiter), lines)), dtype=dtype).reshape(-1,n_cols)
+    if return_comments:
+        return x, comments
+    else:
+        return x
+
+
+# ========== NIFTI ==========
 def read_nii(fname, return_img=False):
     if fname[-4:] != '.nii':
         fname = fname + '.nii'
@@ -667,6 +704,7 @@ def write_nii(fname, vol, base_img=None):
     nibabel.save(img, fname)
 
 
+# ========== AFNI HEAD/BRIK ==========
 def read_afni(fname, remove_nii=True, return_img=False):
     try:
         if fname[-5:] in ['.HEAD', '.BRIK']:
@@ -696,22 +734,9 @@ def write_afni(prefix, vol, base_img=None):
     os.remove(nii_fname)
 
 
-def read_txt(fname, dtype=float, comment='#', delimiter=None, skiprows=0, return_comments=False):
-    '''Read numerical array from text file, much faster than np.loadtxt()'''
-    with open(fname, 'r') as fin:
-        lines = fin.readlines()
-    if return_comments:
-        comments = [line for line in lines[skiprows:] if line.strip() and line.startswith(comment)]
-    lines = [line for line in lines[skiprows:] if line.strip() and not line.startswith(comment)]
-    n_cols = len(lines[0].split(delimiter))
-    x = np.fromiter(itertools.chain.from_iterable(
-        map(lambda line: line.split(delimiter), lines)), dtype=dtype).reshape(-1,n_cols)
-    if return_comments:
-        return x, comments
-    else:
-        return x
 
 
+# ========== AFNI ASC ==========
 def read_asc(fname, dtype=None):
     '''Read FreeSurfer/SUMA surface (vertices and faces) in *.asc format.'''
     if dtype is None:
@@ -771,6 +796,23 @@ def write_asc(fname, verts, faces):
         np.savetxt(fout, [[len(verts), len(faces)]], fmt='%d')
         np.savetxt(fout, np.c_[verts, np.zeros(len(verts))], fmt=['%.6f', '%.6f', '%.6f', '%d'])
         np.savetxt(fout, np.c_[faces, np.zeros(len(faces))], fmt='%d')    
+
+
+# ========== GIFTI ==========
+def read_gii(fname, return_img=False):
+    img = nibabel.load(fname)
+    # verts, faces = img.darrays[0].data, img.darrays[1].data
+    verts = img.get_arrays_from_intent(nibabel.nifti1.intent_codes['NIFTI_INTENT_POINTSET'])[0].data
+    faces = img.get_arrays_from_intent(nibabel.nifti1.intent_codes['NIFTI_INTENT_TRIANGLE'])[0].data
+    return (verts, faces, img) if return_img else (verts, faces)
+
+
+def write_gii(fname, verts, faces):
+    # NOTE: SUMA only work with float32 NIFTI_INTENT_POINTSET and int32 NIFTI_INTENT_TRIANGLE
+    verts = nibabel.gifti.GiftiDataArray(data=verts.astype('float32'), intent=nibabel.nifti1.intent_codes['NIFTI_INTENT_POINTSET'])
+    faces = nibabel.gifti.GiftiDataArray(data=faces.astype('int32'), intent=nibabel.nifti1.intent_codes['NIFTI_INTENT_TRIANGLE'])
+    img = nibabel.gifti.GiftiImage(darrays=[verts, faces])
+    nibabel.gifti.write(img, fname)
 
 
 def read_label(fname):
@@ -1007,10 +1049,7 @@ class Mask(object):
 
     def _infer_geometry(self, fname):
         self.IJK = afni.get_DIMENSION(fname)[:3]
-        ORIENT = afni.get_ORIENT(fname, format='sorter')
-        ORIGIN = afni.get_ORIGIN(fname)
-        DELTA = afni.get_DELTA(fname)
-        self.MAT = np.c_[np.diag(DELTA), ORIGIN][ORIENT,:]
+        self.MAT = afni.get_affine(fname)
 
     def to_dict(self):
         return dict(master=self.master, value=self.value, index=self.index, IJK=self.IJK, MAT=self.MAT)
@@ -1143,17 +1182,17 @@ class Mask(object):
             vol = np.zeros(self.IJK) # Don't support int64?？
             assert(self.index.size==x.size)
             vol.T.flat[self.index] = x
-            mat = np.dot(np.diag([-1,-1, 1]), self.MAT) # Have to do this to get RSA (otherwise it's LSP), don't know why... (PS. ijk -> xzy)
+            mat = np.dot(np.diag([-1,-1, 1]), self.MAT) # AFNI uses DICOM's RAI, but NIFTI uses LPI aka RAS+
             aff = nibabel.affines.from_matvec(mat[:,:3], mat[:,3])
             img = nibabel.Nifti1Image(vol, aff)
+            # https://afni.nimh.nih.gov/afni/community/board/read.php?1,149338,149340#msg-149340
+            # 0 (unknown) sform not defined
+            # 1 (scanner) RAS+ in scanner coordinates
+            # 2 (aligned) RAS+ aligned to some other scan
+            # 3 (talairach) RAS+ in Talairach atlas space
+            # 4 (mni) RAS+ in MNI atlas space
+            img.header['sform_code'] = 1
             if prefix.endswith('.nii'):
-                # https://afni.nimh.nih.gov/afni/community/board/read.php?1,149338,149340#msg-149340
-                # 0 (unknown) sform not defined
-                # 1 (scanner) RAS+ in scanner coordinates
-                # 2 (aligned) RAS+ aligned to some other scan
-                # 3 (talairach) RAS+ in Talairach atlas space
-                # 4 (mni) RAS+ in MNI atlas space
-                img.header['sform_code'] = 1
                 nibabel.save(img, prefix)
             else:
                 nibabel.save(img, temp_file)
@@ -1175,6 +1214,10 @@ class Mask(object):
     def xyz(self):
         return np.dot(self.MAT[:,:3], self.ijk.T).T + self.MAT[:,3]
 
+    @property
+    def xyz_nifti(self):
+        return self.xyz * np.r_[-1,-1,1] # AFNI uses DICOM's RAI, but NIFTI uses LPI aka RAS+
+
 
 class BallMask(Mask):
     def __init__(self, master, c, r):
@@ -1194,11 +1237,8 @@ class SlabMask(Mask):
         self.slab(x1, x2, y1, y2, z1, z2, inplace=True)
 
 
-def read_affine(fname, oneline=None, sep=None):
-    with open(fname) as fi:
-        lines = fi.readlines()
-    if oneline is not None:
-        mat = np.float_(lines[oneline].split(sep)).reshape(3,4)
+def read_affine(fname, sep=None):
+    mat = read_txt(fname, delimiter=sep).reshape(-1,3,4).squeeze()
     return mat
 
 
@@ -1211,6 +1251,24 @@ def write_affine(fname, mat, oneline=True, sep=None):
         else:
             for row in mat:
                 fo.write(sep.join(['%.6f' % x for x in row]) + '\n')
+
+
+def read_warp(fname):
+    '''
+    References
+    ----------
+    [1] https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dQwarp.html
+        "An AFNI nonlinear warp dataset stores the displacements (in DICOM mm) from
+        the base dataset grid to the source dataset grid.
+        AFNI stores a 3D warp as a 3-volume dataset (NiFTI or AFNI format), with the
+        voxel values being the displacements in mm (32-bit floats) needed to
+        'reach out' and bring (interpolate) another dataset into alignment -- that is,
+        'pulling it back' to the grid defined in the warp dataset header."
+    '''
+    vol = read_vol(fname)
+    dX, dY, dZ = np.rollaxis(vol.squeeze(), -1, 0)
+    xyz2ijk = math.invert_affine(afni.get_affine(fname)) # iMAT
+    return dX, dY, dZ, xyz2ijk
 
 
 if __name__ == '__main__':
