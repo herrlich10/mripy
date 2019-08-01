@@ -323,7 +323,7 @@ def nudge_cmd2mat(nudge_cmd, in_file, return_inverse=False):
     AFNI way is to store inverse matrix under forward name (to "pull" data from src).
     So the mathematical map from moveable to tempalte is in the 2nd return (INV).
     '''
-    match = re.search(r'(-?\d+\.\d{2}I) (-?\d+\.\d{2}R) (-?\d+\.\d{2}A)\D+(-?\d+\.\d{2}S) (-?\d+\.\d{2}L) (-?\d+\.\d{2}P)', nudge_cmd)
+    match = re.search(r'(-?\d+\.\d{2}I) (-?\d+\.\d{2}R) (-?\d+\.\d{2}A).+?(-?\d+\.\d{2}S) (-?\d+\.\d{2}L) (-?\d+\.\d{2}P)', nudge_cmd)
     if match:
         I, R, A, S, L, P = match.groups()
         temp_file = utils.temp_prefix(suffix='.nii')
@@ -666,8 +666,14 @@ def irregular_resample(transforms, xyz, in_file, order=3):
     return v
 
 
-def resample_to_surface(transforms, surfaces, in_file, out_files=None, jobs=1, **kwargs):
+def resample_to_surface(transforms, surfaces, in_file, out_files=None, mask_file=None, jobs=1, **kwargs):
     '''
+    Parameters
+    ----------
+    mask_file : str, dict
+        Surface mask. Either a file name or dict(lh='lh.mask.niml.dset', rh='rh.mask.niml.dset').
+        This will generate a partial surface dataset.
+
     Examples
     --------
     resample_to_surface(transforms=[f'SurfVol_Alnd_Exp.E2A.1D', f'epi{run}.volreg.aff12.1D', f'epi{run}.volreg.warp.nii'], 
@@ -686,27 +692,37 @@ def resample_to_surface(transforms, surfaces, in_file, out_files=None, jobs=1, *
         if isinstance(f, six.string_types) else f for f in transforms]
     if vol.ndim == 3: # For non 3D+t dset
         vol = vol[...,np.newaxis]
+    n_vols = vol.shape[-1]
+    if mask_file is not None:
+        mask_nodes, mask_values = io.read_surf_data(mask_file)
+        mask_nodes = mask_nodes[mask_values!=0]
+    else:
+        mask_nodes = slice(None)
     pc = utils.PooledCaller(pool_size=jobs)
     for sid, surf_file in enumerate(surfaces):
         print(f">> Mapping {path.basename(in_file)} onto {path.basename(surf_file)}...")
-        verts = io.read_surf_mesh(surf_file)[0]
-        xyz = verts * np.r_[-1,-1,1] # From FreeSurfer's RAS+ to AFNI/DICOM's RAI
+        verts = io.read_surf_mesh(surf_file)[0] # Assume that this is NOT a partial surface mesh
+        n_verts = verts.shape[0]
+        nodes = np.arange(n_verts)[mask_nodes]
+        assert(isinstance(mask_nodes, slice) or np.all(nodes==mask_nodes)) # TODO: Better compatibility check between mesh and mask
+        xyz = verts[mask_nodes,:] * np.r_[-1,-1,1] # From FreeSurfer's RAS+ to AFNI/DICOM's RAI
+        n_xyz = xyz.shape[0]
         if jobs == 1:
-            v = np.zeros(shape=[xyz.shape[0], vol.shape[-1]])
-            for vid in range(vol.shape[-1]):
+            v = np.zeros(shape=[n_xyz, n_vols])
+            for vid in range(n_vols):
                 xforms = [xform[vid] if isinstance(xform, np.ndarray) and xform.ndim==3 else xform for xform in transforms]
                 v[:,vid] = irregular_resample(xforms, xyz, (vol[...,vid], xyz2ijk), **kwargs)
         else:
             # Potential bug: For large dataset, this is strangely slow (even with only 1 job, is still 7x slower than non-shared version)
-            v = utils.SharedMemoryArray.zeros(shape=[xyz.shape[0], vol.shape[-1]]) # lock=False won't speed it up
+            v = utils.SharedMemoryArray.zeros(shape=[n_xyz, n_vols]) # lock=False won't speed it up
             def work(v, vids, transforms, xyz, vol, xyz2ijk):
                 for vid in vids:
                     xforms = [xform[vid] if isinstance(xform, np.ndarray) and xform.ndim==3 else xform for xform in transforms]
                     v[:,vid] = irregular_resample(xforms, xyz, (vol[...,vid], xyz2ijk), **kwargs)
-            for vids in pc.idss(vol.shape[-1], int(np.ceil(vol.shape[-1]/pc.pool_size))):
+            for vids in pc.idss(n_vols, int(np.ceil(n_vols/pc.pool_size))):
                 pc.run(work, v, vids, transforms, xyz, vol, xyz2ijk)
             pc.wait()
-        io.write_niml_bin_nodes(out_files[sid], np.arange(v.shape[0]), v)
+        io.write_surf_data(out_files[sid], nodes, v)
 
 
 def deoblique(in_file, out_file=None, template=None):

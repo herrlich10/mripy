@@ -639,7 +639,7 @@ def convert_dicoms(dicom_dirs, out_dir=None, prefix=None, out_type='.nii', dicom
             convert_dicom(f, path.join(out_dir, '*'+out_type if prefix is None else '{0}{1:02d}{2}'.format(prefix, idx, out_type)), dicom_ext=dicom_ext, **kwargs)
 
 
-# Generic read/write
+# ========== Generic read/write ==========
 def read_vol(fname, return_img=False):
     img = nibabel.load(fname)
     vol = img.get_data()
@@ -664,6 +664,17 @@ def write_surf_mesh(fname, verts, faces, **kwargs):
         write_asc(fname, verts, faces, **kwargs)
     elif fname.endswith('.gii'):
         write_gii(fname, verts, faces, **kwargs)
+
+
+def read_surf_data(fname):
+    if fname.endswith('.niml.dset'):
+        nodes, values = read_niml_bin_nodes(fname)
+    return nodes, values
+
+
+def write_surf_data(fname, nodes, values):
+    if fname.endswith('.niml.dset'):
+        write_niml_bin_nodes(fname, nodes, values)
 
 
 def read_txt(fname, dtype=float, comment='#', delimiter=None, skiprows=0, nrows=None, return_comments=False):
@@ -824,6 +835,7 @@ def read_label(fname):
     return nodes, coords, labels
 
 
+# ========== NIML ascii ==========
 NIML_DSET_CORE_TAGS = ['INDEX_LIST', 'SPARSE_DATA']
 
 def read_niml_dset(fname, tags=None, as_asc=True, return_type='list'):
@@ -872,6 +884,7 @@ def read_niml_dset(fname, tags=None, as_asc=True, return_type='list'):
 #         return data[0], data[1]
 
 
+# ========== NIML binary ==========
 def read_niml_bin_nodes(fname):
     '''
     Read "Node Bucket" (node indices and values) from niml (binary) dataset.
@@ -1001,6 +1014,54 @@ def write_1D_nodes(fname, idx, val):
     formats = dict(int='%d', float='%.6f')
     np.savetxt(fname, np.c_[idx, val], fmt=['%d', formats[get_ni_type(val)]])
     
+
+# ========== Affine matrix (matvec format, or aff12) ==========
+def read_affine(fname, sep=None):
+    '''
+    Returns
+    -------
+    mat : 3x4 or Nx3x4
+    '''
+    mat = read_txt(fname, delimiter=sep).reshape(-1,3,4).squeeze()
+    return mat
+
+
+def write_affine(fname, mat, oneline=True, sep=None):
+    '''
+    TODO: Not support multivolume affine yet
+    '''
+    if sep is None:
+        sep = ' '
+    with open(fname, 'w') as fo:
+        if oneline:
+            fo.write(sep.join(['%.6f' % x for x in mat.flat]) + '\n')
+        else:
+            for row in mat:
+                fo.write(sep.join(['%.6f' % x for x in row]) + '\n')
+
+
+def read_warp(fname):
+    '''
+    References
+    ----------
+    [1] https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dQwarp.html
+        "An AFNI nonlinear warp dataset stores the displacements (in DICOM mm) from
+        the base dataset grid to the source dataset grid.
+        AFNI stores a 3D warp as a 3-volume dataset (NiFTI or AFNI format), with the
+        voxel values being the displacements in mm (32-bit floats) needed to
+        'reach out' and bring (interpolate) another dataset into alignment -- that is,
+        'pulling it back' to the grid defined in the warp dataset header."
+    '''
+    vol = read_vol(fname)
+    dX, dY, dZ = np.rollaxis(vol.squeeze(), -1, 0)
+    xyz2ijk = math.invert_affine(afni.get_affine(fname)) # iMAT
+    return dX, dY, dZ, xyz2ijk
+
+
+def read_register_dat(fname):
+    mat = io.read_txt(fname, skiprows=4, nrows=3)
+    return mat
+
 
 class MaskDumper(object):
     def __init__(self, mask_file):
@@ -1235,40 +1296,6 @@ class SlabMask(Mask):
     def __init__(self, master, x1=None, x2=None, y1=None, y2=None, z1=None, z2=None):
         Mask.__init__(self, master, kind='full')
         self.slab(x1, x2, y1, y2, z1, z2, inplace=True)
-
-
-def read_affine(fname, sep=None):
-    mat = read_txt(fname, delimiter=sep).reshape(-1,3,4).squeeze()
-    return mat
-
-
-def write_affine(fname, mat, oneline=True, sep=None):
-    if sep is None:
-        sep = ' '
-    with open(fname, 'w') as fo:
-        if oneline:
-            fo.write(sep.join(['%.6f' % x for x in mat.flat]) + '\n')
-        else:
-            for row in mat:
-                fo.write(sep.join(['%.6f' % x for x in row]) + '\n')
-
-
-def read_warp(fname):
-    '''
-    References
-    ----------
-    [1] https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dQwarp.html
-        "An AFNI nonlinear warp dataset stores the displacements (in DICOM mm) from
-        the base dataset grid to the source dataset grid.
-        AFNI stores a 3D warp as a 3-volume dataset (NiFTI or AFNI format), with the
-        voxel values being the displacements in mm (32-bit floats) needed to
-        'reach out' and bring (interpolate) another dataset into alignment -- that is,
-        'pulling it back' to the grid defined in the warp dataset header."
-    '''
-    vol = read_vol(fname)
-    dX, dY, dZ = np.rollaxis(vol.squeeze(), -1, 0)
-    xyz2ijk = math.invert_affine(afni.get_affine(fname)) # iMAT
-    return dX, dY, dZ, xyz2ijk
 
 
 if __name__ == '__main__':

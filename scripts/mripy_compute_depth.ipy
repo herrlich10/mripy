@@ -142,7 +142,7 @@ if __name__ == '__main__':
                 for k, alpha in enumerate(alphas):
                     lamina_names[hemi].append(f'{hemi}.L{k:02d}{surf_ext}')
                     lamina_files[hemi].append(path.join(temp_folder, lamina_names[hemi][k]))
-                    pc.run(surface.intermediate_asc, lamina_files[hemi][k], inner[hemi], outer[hemi], alpha, method=args.flavor)
+                    pc.run(surface.create_lamina_mesh, lamina_files[hemi][k], inner[hemi], outer[hemi], alpha, method=args.flavor)
             pc.wait()
             # Generate spec files
             lamina_spec = {hemi: path.join(temp_folder, 'lamina_{0}.spec'.format(hemi)) for hemi in hemis}

@@ -39,8 +39,8 @@ def LPI2RAI_affine(mat):
     return concat_affine(LPI2RAI, concat_affine(mat, LPI2RAI))
 
 RAI2LPI_affine = LPI2RAI_affine
-fsl2afni_affine = LPI2RAI_affine
-afni2fsl_affine = RAI2LPI_affine
+# fsl2afni_affine = LPI2RAI_affine
+# afni2fsl_affine = RAI2LPI_affine
 
 
 def polyfit3d(x, y, z, f, deg, method=None):

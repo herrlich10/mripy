@@ -265,7 +265,7 @@ def compute_voxel_depth(xyz, inner, outer, S2E_mat, method='equivolume', n_jobs=
     return depths
 
 
-def intermediate_asc(fname, inner, outer, alpha, method='equivolume'):
+def create_lamina_mesh(fname, inner, outer, alpha, method='equivolume'):
     if method == 'equivolume':
         method = 'equivolume_inside'
     verts, faces = compute_intermediate_mesh(inner, outer, alpha, method=method)
