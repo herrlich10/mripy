@@ -79,9 +79,10 @@ def inspect_mp2rage(data_dir, subdir_pattern='T1??'):
     sess_dirs = sorted([f for f in glob.glob(f"{data_dir}/*") if path.isdir(f)])
     df = []
     for sess_dir in sess_dirs:
-        info = dicom.parse_series_info(glob.glob(f"{sess_dir}/{subdir_pattern}")[0])
+        T1_folders = glob.glob(f"{sess_dir}/{subdir_pattern}")
+        info = dicom.parse_series_info(T1_folders[0])
         df.append(OrderedDict(session=path.basename(sess_dir), resolution='x'.join(f'{d:g}' for d in info['resolution']), 
-            ref_amp=info['ReferenceAmplitude'], coil=info['TransmittingCoil']))
+            ref_amp=info['ReferenceAmplitude'], coil=info['TransmittingCoil'], n_images=len(T1_folders)))
     return pd.DataFrame(df)
 
 

@@ -15,6 +15,7 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--output', default=None, help='output SUMA.hd directory (default ../SUMA.hd)')
     parser.add_argument('-f', '--surf', nargs='+', default=['pial', 'smoothwm', 'inflated'], help='surfaces that need to be interpolated')
     parser.add_argument('-p', '--power', type=int, default=2, help='number of iterations for face quadrisection (default 2, i.e., 16x denser)')
+    parser.add_argument('-m', '--mask', default=None, help='only interp mesh within mask (to save resources)')
     parser.add_argument('-j', '--jobs', type=int, default=2, help='number of parallel processes (default 2)')
     args = parser.parse_args()
     if args.output is None:
@@ -28,22 +29,30 @@ if __name__ == '__main__':
     hemis = ['lh', 'rh']
     suma_subj = afni.get_suma_subj(args.input)
     sv = path.basename(afni.get_surf_vol(args.input))
-    ext = afni.get_surf_type(suma_dir)
+    ext = afni.get_surf_type(args.input)
+
+    # Infer mask file variants
+    if args.mask is not None:
+        masks = afni.infer_surf_dset_variants(args.mask, hemis=hemis)
+        for hemi, mask in masks.items():
+            idx, val = io.read_surf_data(mask)
+            masks[hemi] = idx[val!=0]
 
     # Interpolate surface meshes
-    def interp_mesh(fin, fout):
+    def interp_mesh(fin, fout, mask):
         print('processing {0}...'.format(fin))
         try:
             verts, faces = io.read_surf_mesh(fin)
         except ValueError:
             verts, faces = io.read_patch_asc(fin)[:2]
-        verts, faces = surface.quadruple_mesh(verts, faces, power=args.power)
+        verts, faces = surface.quadruple_mesh(verts, faces, power=args.power, mask=mask)
         io.write_surf_mesh(fout, verts, faces)
     pc = utils.PooledCaller(pool_size=args.jobs)
     for surf in args.surf:
         for hemi in hemis:
             fname = f"{hemi}.{surf}{ext}"
-            pc.run(interp_mesh, path.join(args.input, fname), path.join(args.output, fname))
+            pc.run(interp_mesh, path.join(args.input, fname), path.join(args.output, fname), 
+                masks[hemi] if args.mask is not None else None)
     pc.wait()
 
     # Create spec files

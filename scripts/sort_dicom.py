@@ -95,6 +95,7 @@ if __name__ == '__main__':
     # Overload print
     if args.log is not None:
         print = script_utils.get_log_printer(args.log)[0]
+        print('# {0}'.format(os.getcwd()))
         print('# {0}'.format(' '.join([path.basename(sys.argv[0])] + sys.argv[1:])))
     # Copy files
     for kind, seqs in to_copy.items():

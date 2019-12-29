@@ -111,7 +111,7 @@ def split_out_file(out_file, split_path=False, trailing_slash=False):
     out_dir, out_name = path.split(out_file)
     if trailing_slash and out_dir:
         out_dir += '/'
-    match = re.match(r'(.+)(.nii|.nii.gz|.1D|.1D.dset|.1D.roi|.niml.dset|.niml.roi)$', out_name)
+    match = re.match(r'(.+)(.nii|.nii.gz|.1D|.1D.dset|.1D.roi|.niml.dset|.niml.roi|.csv)$', out_name)
     if match:
         prefix, ext = match.groups()
     else:
@@ -155,7 +155,9 @@ def get_prefix(fname, with_path=False):
 
 
 def get_surf_vol(suma_dir):
-    '''Infer SUMA SurfVol filename (agnostic about file type: .nii vs +orig.HEAD/BRIK).'''
+    '''
+    Infer SUMA SurfVol filename with full path (agnostic about file type: .nii vs +orig.HEAD/BRIK).
+    '''
     return glob.glob(path.join(suma_dir, '*_SurfVol*'))[0]
 
 
@@ -170,11 +172,12 @@ def get_suma_subj(suma_dir):
 
 def get_surf_type(suma_dir):
     '''Infer SUMA surface mesh file type (.gii vs .asc).'''
-    return path.splitext(glob.glob(path.join(suma_dir, 'lh.pial.*'))[0])[1]
+    surf_files = [f for f in os.listdir(suma_dir) if re.match('(?:lh|rh).(?:pial|smoothwm|inflated).*', f)]
+    return path.splitext(surf_files[0])[1]
 
 
-SPEC_HEMIS = ['lh', 'rh', 'both', 'mh']
-HEMI_PATTERN = r'(?:(?<=[^a-zA-Z0-9])|^)(?:lh|rh|both|mh)(?=[^a-zA-Z0-9])'
+SPEC_HEMIS = ['lh', 'rh', 'both', 'mh', 'bh']
+HEMI_PATTERN = r'(?:(?<=[^a-zA-Z0-9])|^)(?:lh|rh|both|mh|bh)(?=[^a-zA-Z0-9])'
 
 def substitute_hemi(fname, hemi='{0}'):
     return re.sub(HEMI_PATTERN, hemi, fname)
@@ -193,7 +196,7 @@ def get_suma_spec(suma_spec):
         subj = get_suma_subj(suma_spec)
         return {hemi: path.join(suma_spec, f"{subj}_{hemi}.spec") for hemi in SPEC_HEMIS}
     else: # It is a .spec file
-        spec_fmt = re.sub('(lh|rh|both|mh).spec', '{0}.spec', suma_spec)
+        spec_fmt = re.sub(f"({'|'.join(SPEC_HEMIS)}).spec", '{0}.spec', suma_spec)
         return {hemi: spec_fmt.format(hemi) for hemi in SPEC_HEMIS}
 
 
@@ -201,14 +204,31 @@ def get_suma_info(suma_dir, suma_spec=None):
     info = {}
     info['subject'] = get_suma_subj(suma_dir)
     if suma_spec is None: # Infer spec files from suma_dir
-        info['spec'] = {hemi: '{0}/{1}_{2}.spec'.format(suma_dir, info['subject'], hemi) for hemi in SPEC_HEMIS}
+        info['spec'] = get_suma_spec(suma_dir)
     else: # Infer other spec files from one spec file
         info['spec'] = get_suma_spec(suma_spec)
     return info
 
 
-def infer_surf_dset_names(fname, hemis=SPEC_HEMIS):
+def get_hemi(fname):
+    basename = path.basename(fname)
+    match = re.search(HEMI_PATTERN, basename)
+    if match:
+        hemi = match.group(0)
+    else:
+        raise ValueError(f'** ERROR: Cannot infer "hemi" from "{basename}"')
+    return hemi
+
+
+def infer_surf_dset_variants(fname, hemis=SPEC_HEMIS):
     '''
+    >>> infer_surf_dset_variants('data.niml.dset')
+    {'lh': 'lh.data.niml.dset', 'rh': 'rh.data.niml.dset', 'both': 'both.data.niml.dset', mh': 'mh.data.niml.dset'}
+    >>> infer_surf_dset_variants('lh.data.niml.dset')
+    {'lh': 'lh.data.niml.dset'}
+
+    Parameters
+    ----------
     fname : str, list, or dict
     '''
     if isinstance(fname, six.string_types):
@@ -354,7 +374,7 @@ def get_head_extents(fname):
 
 def get_brick_labels(fname, label2index=False):
     res = check_output(['3dAttribute', 'BRICK_LABS', fname])[-2]
-    labels = res.split('~')
+    labels = res.split('~')[:-1] # Each label ends with "~"
     if label2index:
         return {label: k for k, label in enumerate(labels)}
     else:
@@ -363,6 +383,26 @@ def get_brick_labels(fname, label2index=False):
 
 def get_TR(fname):
     return float(check_output(['3dinfo', '-TR', fname])[-2])
+
+
+def set_attribute(fname, name, value, type=None):
+    values = np.atleast_1d(value)
+    if type == 'str' or isinstance(value, str):
+        check_output(['3drefit', '-atrstring', name, f"{value}", fname])
+    elif type == 'int' or np.issubdtype(values.dtype, np.integer):
+        check_output(['3drefit', '-atrint', name, f"{' '.join([str(v) for v in values])}", fname])
+    elif type == 'float' or np.issubdtype(values.dtype, np.floating):
+        check_output(['3drefit', '-atrfloat', name, f"{' '.join([str(v) for v in values])}", fname])
+
+
+def get_attribute(fname, name, type=None):
+    res = check_output(['3dAttribute', name, fname])[-2]
+    if type == 'int':
+        return np.int_(res[:-1].split())
+    elif type == 'float':
+        return np.float_(res[:-1].split())
+    else:
+        return res[:-1]
 
 
 def get_S2E_mat(fname, mat='S2E'):

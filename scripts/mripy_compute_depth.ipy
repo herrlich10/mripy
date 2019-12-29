@@ -67,7 +67,7 @@ if __name__ == '__main__':
         '''))
     parser.add_argument('-b', '--base', required=True, help='grid parent')
     parser.add_argument('-s', '--suma', default='../SUMA', help='SUMA directory (default ../SUMA)')
-    parser.add_argument('-v', '--surf_vol', default='SurfVol_Alnd_Exp+orig', help='SurfVol (default SurfVol_Alnd_Exp+orig)')
+    parser.add_argument('-v', '--surf_vol', default=None, help='SurfVol (default SurfVol_Alnd_Exp.nii)')
     parser.add_argument('-m', '--method', default='volume_weighted', help='method for depth estimation ([volume_weighted]|center_weighted|3dSurfMask)')
     parser.add_argument('-f', '--flavor', default='equivolume', help='flavor of depth estimation ([equivolume]|equidistance)')
     parser.add_argument('-l', '--layers', nargs='+', default=['L14'], help='sub-laminae division schema ([L14]|L5)')
@@ -76,6 +76,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
     spec = afni.get_suma_info(args.suma)['spec']
     hemis = ['lh', 'rh']
+    if args.surf_vol is None:
+        if path.exists('SurfVol_Alnd_Exp.nii'):
+            args.surf_vol = 'SurfVol_Alnd_Exp.nii'
+        elif path.exists('SurfVol_Alnd_Exp+orig.HEAD'):
+            args.surf_vol = 'SurfVol_Alnd_Exp+orig.HEAD'
+        else:
+            raise ValueError('>> Please specify --surf_vol')
     # prefix = afni.get_prefix(args.base) if args.prefix is None else args.prefix
     if args.prefix is None:
         prefix, ext = afni.split_out_file(args.base)
@@ -256,7 +263,7 @@ if __name__ == '__main__':
 
     # Check successful
     if pc.all_successful():
-        print('>> Depth estimation was done without error.')
+        print('>> Depth estimation was done successfully.')
     else:
         print('>> Sorry, but something went wrong in the middle...')
 

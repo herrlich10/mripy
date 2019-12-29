@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
 import sys, os, subprocess
-import re, glob, shlex, shutil, tempfile
+import re, glob, shlex, shutil, tempfile, warnings
 import collections, itertools, copy
 import random, string
 from os import path
 from datetime import datetime
 import numpy as np
+from scipy import ndimage
 from . import six, utils, afni, math, paraproc
 # For accessing NIFTI files
 try:
@@ -443,12 +444,12 @@ def sort_dicom_series(folder, series_pattern=SERIES_PATTERN):
     files = sorted(glob.glob(path.join(folder, '*.IMA')))
     series = collections.OrderedDict()
     for f in files:
-        filename = path.split(f)[1]
+        filename = path.basename(f)
         match = re.search(series_pattern, filename)
         sn = match.group(1)
         if sn not in series:
             series[sn] = []
-        series[sn].append(f)
+        series[sn].append(filename) # Changed 2019-10-25: series[sn].append(f)
     # Separate potentially multiple series sharing the same series number into different studies
     studies = None
     for s_idx, (sn, files) in enumerate(series.items()):
@@ -625,11 +626,14 @@ def convert_dicoms(dicom_dirs, out_dir=None, prefix=None, out_type='.nii', dicom
         The output would look like:
             out_dir/anat.nii, out_dir/func01.nii, out_dir/func02.nii, etc.
     '''
+    original_dicom_dirs = dicom_dirs
     if isinstance(dicom_dirs, six.string_types):
         if utils.contain_wildcard(dicom_dirs):
             dicom_dirs = glob.glob(dicom_dirs)
         else:
             dicom_dirs = glob.glob(path.join(dicom_dirs, '*'))
+    if len(dicom_dirs) == 0: # Sanity check after Yong's true story
+        warnings.warn(f"\n>> Cannot find any dicom file to convert. Is the following path correct?\n{original_dicom_dirs}")
     if out_dir is None:
         out_dir = '.'
     idx = 0
@@ -647,7 +651,10 @@ def read_vol(fname, return_img=False):
 
 
 def write_vol(fname, vol, base_img=None):
-    pass
+    if fname.endswith('.nii'):
+        write_nii(fname, vol, base_img)
+    else:
+        write_afni(fname, vol, base_img)
 
 
 def read_surf_mesh(fname, return_img=False, **kwargs):
@@ -677,6 +684,25 @@ def write_surf_data(fname, nodes, values):
         write_niml_bin_nodes(fname, nodes, values)
 
 
+def read_surf_info(fname):
+    info = {}
+    if fname.endswith('.asc'):
+        with open(fname) as fi:
+            for line in fi:
+                if not line.startswith('#'):
+                    info['n_verts'], info['n_faces'] = np.int_(line.split())
+                    break
+        info['hemi'] = afni.get_hemi(fname)
+        info['ext'] = '.asc'
+    elif fname.endswith('.gii'):
+        img = nibabel.load(fname)
+        info['n_verts'] = img.get_arrays_from_intent(nibabel.nifti1.intent_codes['NIFTI_INTENT_POINTSET'])[0].dims[0]
+        info['n_faces'] = img.get_arrays_from_intent(nibabel.nifti1.intent_codes['NIFTI_INTENT_TRIANGLE'])[0].dims[0]
+        info['hemi'] = afni.get_hemi(fname)
+        info['ext'] = '.gii'
+    return info
+
+
 def read_txt(fname, dtype=float, comment='#', delimiter=None, skiprows=0, nrows=None, return_comments=False):
     '''Read numerical array from text file, much faster than np.loadtxt()'''
     with open(fname, 'r') as fin:
@@ -695,15 +721,15 @@ def read_txt(fname, dtype=float, comment='#', delimiter=None, skiprows=0, nrows=
 
 # ========== NIFTI ==========
 def read_nii(fname, return_img=False):
-    if fname[-4:] != '.nii':
+    if fname[-4:] != '.nii' and fname[-7:] != '.nii.gz':
         fname = fname + '.nii'
     img = nibabel.load(fname)
     vol = img.get_data()
     return (vol, img) if return_img else vol
 
 
-def write_nii(fname, vol, base_img=None):
-    if fname[-4:] != '.nii':
+def write_nii(fname, vol, base_img=None, space=None):
+    if fname[-4:] != '.nii' and fname[-7:] != '.nii.gz':
         fname = fname + '.nii'
     if base_img is None:
         affine = nibabel.affines.from_matvec(np.eye(3), np.zeros(3))
@@ -712,7 +738,39 @@ def write_nii(fname, vol, base_img=None):
     else:
         affine = base_img.affine
     img = nibabel.Nifti1Image(vol, affine)
+    # https://afni.nimh.nih.gov/afni/community/board/read.php?1,149338,149340#msg-149340
+    # 0 (unknown) sform not defined
+    # 1 (scanner) RAS+ in scanner coordinates
+    # 2 (aligned) RAS+ aligned to some other scan
+    # 3 (talairach) RAS+ in Talairach atlas space
+    # 4 (mni) RAS+ in MNI atlas space
+    if space is None:
+        space = 1
+    img.header['sform_code'] = space
     nibabel.save(img, fname)
+
+
+SPACE_CODE = {
+    'unknown': 0,
+    'scanner': 1, 'orig': 1, 'ORIG': 1,
+    'aligned': 2,
+    'talairach': 3, 'tlrc': 3, 'TLRC': 3,
+    'mni': 4, 'MNI': 4,
+}
+
+
+def change_space(in_file, out_file=None, space=None):
+    '''
+    >>> change_space('MNI152_2009_template.nii.gz', 'template.nii', space='ORIG')
+    >>> change_space('test+tlrc.HEAD') # -> test.nii as ORIG
+    '''
+    if out_file is None:
+        prefix, ext = afni.split_out_file(in_file)
+        out_file = f"{prefix}.nii"
+    if isinstance(space, str):
+        space = SPACE_CODE[space]
+    vol, img = read_vol(in_file, return_img=True)
+    write_nii(out_file, vol, base_img=img, space=space)
 
 
 # ========== AFNI HEAD/BRIK ==========
@@ -725,7 +783,8 @@ def read_afni(fname, remove_nii=True, return_img=False):
         else:
             fname = fname + '.HEAD'
         img = nibabel.load(fname) # Start from nibabel 2.3.0 (with brikhead.py)
-        vol = img.get_data().squeeze()
+        # vol = img.get_data().squeeze()
+        vol = img.get_data()
         return (vol, img) if return_img else vol
     except nibabel.filebasedimages.ImageFileError:
         print('*+ WARNING: Fail to open "{0}" with nibabel, fallback to 3dAFNItoNIFTI'.format(fname)) 
@@ -1097,7 +1156,7 @@ class Mask(object):
         self.value = None
         if self.master is not None:
             self._infer_geometry(self.master)
-            if master.endswith('.nii'):
+            if master.endswith('.nii') or master.endswith('.nii.gz'):
                 self.value = read_nii(self.master).ravel('F') # [x,y,z], x changes the fastest. Also, NIFTI read/write data in 'F'.
             else:
                 self.value = read_afni(self.master).ravel('F')
@@ -1128,7 +1187,7 @@ class Mask(object):
         mask = cls(master=None)
         mask.master = master
         mask._infer_geometry(master)
-        data = {v: read_afni(f).squeeze() for v, f in kwargs.items()}
+        data = {v: read_vol(f).squeeze() for v, f in kwargs.items()}
         idx = eval(expr, data).ravel('F') > 0
         mask.index = np.arange(np.prod(mask.IJK))[idx]
         return mask
@@ -1237,7 +1296,7 @@ class Mask(object):
             data.append(vol.transpose(*T).reshape(np.prod(S[:3]),int(np.prod(S[3:])))[self.index,:])
         return np.hstack(data).squeeze()
 
-    def undump(self, prefix, x, method='nibabel'):
+    def undump(self, prefix, x, method='nibabel', space=None):
         if method == 'nibabel': # Much faster
             temp_file = 'tmp.%s.nii' % next(tempfile._get_candidate_names())
             vol = np.zeros(self.IJK) # Don't support int64?？
@@ -1252,7 +1311,9 @@ class Mask(object):
             # 2 (aligned) RAS+ aligned to some other scan
             # 3 (talairach) RAS+ in Talairach atlas space
             # 4 (mni) RAS+ in MNI atlas space
-            img.header['sform_code'] = 1
+            if space is None:
+                space = 1
+            img.header['sform_code'] = space
             if prefix.endswith('.nii'):
                 nibabel.save(img, prefix)
             else:
@@ -1296,6 +1357,26 @@ class SlabMask(Mask):
     def __init__(self, master, x1=None, x2=None, y1=None, y2=None, z1=None, z2=None):
         Mask.__init__(self, master, kind='full')
         self.slab(x1, x2, y1, y2, z1, z2, inplace=True)
+
+
+def filter_cluster(in_file, out_file, top=None, neighbor=2):
+    '''
+    neighbor : int
+        1 : face touch
+        2 : edge touch (default, as in afni)
+        3 : corner touch
+    '''
+    d = np.mgrid[-1:2,-1:2,-1:2]
+    structure = (np.linalg.norm(d, axis=0) <= (neighbor+1)/2).astype(int)
+    im, img = read_vol(in_file, return_img=True)
+    label, n = ndimage.label(im, structure)
+    vol = [np.sum(label==k) for k in range(1, n+1)]
+    if top is not None:
+        keeped = np.argsort(vol)[::-1][:top] + 1
+        for k in range(1, n+1):
+            if k not in keeped:
+                im[label==k] = 0
+    write_vol(out_file, im, base_img=img)
 
 
 if __name__ == '__main__':

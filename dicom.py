@@ -46,13 +46,13 @@ def parse_Siemens_CSA2(b):
         match = re.search(pattern, b)        
         return match.group(1) if match else default
     CSA2 = {
-        'ReferenceAmplitude': float(re.search(rb'sTXSPEC\.asNucleusInfo\[0\]\.flReferenceAmplitude\s+=\s(\S+)\s', b).group(1)),
-        'PhasePartialFourier': re.search(rb'sKSpace\.ucPhasePartialFourier\s+=\s(\S+)\s', b).group(1).decode(encoding),
-        'SlicePartialFourier': re.search(rb'sKSpace\.ucSlicePartialFourier\s+=\s(\S+)\s', b).group(1).decode(encoding),
-        'RefLinesPE': int(parse_value(rb'sPat\.lRefLinesPE\s+=\s(\S+)\s', b, default=0)),
-        'PATMode': re.search(rb'sPat.ucPATMode\s+=\s(\S+)\s', b).group(1).decode(encoding),
-        'RefScanMode': re.search(rb'sPat\.ucRefScanMode\s+=\s(\S+)\s', b).group(1).decode(encoding),
-        'TotalScanTimeSec': float(re.search(rb'lTotalScanTimeSec\s+=\s(\S+)\s', b).group(1)),
+        'ReferenceAmplitude': float(parse_value(rb'sTXSPEC\.asNucleusInfo\[0\]\.flReferenceAmplitude\s+=\s+(\S+)\s', b, default=np.nan)),
+        'PhasePartialFourier': re.search(rb'sKSpace\.ucPhasePartialFourier\s+=\s+(\S+)\s', b).group(1).decode(encoding),
+        'SlicePartialFourier': re.search(rb'sKSpace\.ucSlicePartialFourier\s+=\s+(\S+)\s', b).group(1).decode(encoding),
+        'RefLinesPE': int(parse_value(rb'sPat\.lRefLinesPE\s+=\s+(\S+)\s', b, default=0)),
+        'PATMode': re.search(rb'sPat.ucPATMode\s+=\s+(\S+)\s', b).group(1).decode(encoding),
+        'RefScanMode': re.search(rb'sPat\.ucRefScanMode\s+=\s+(\S+)\s', b).group(1).decode(encoding),
+        'TotalScanTimeSec': float(re.search(rb'lTotalScanTimeSec\s+=\s+(\S+)\s', b).group(1)),
         # 'SlicePosition': np.float_(re.findall(rb'sSliceArray\.asSlice\[\d+\]\.sPosition\.\w{4}\s+=\s(\S+)\s', b)).reshape(-1,3), # Unfortunately, no temporal order
     }
     return CSA2
@@ -134,7 +134,7 @@ custom_parsers = {
     'resolution': lambda header: np.r_[header['PixelSpacing'], header['SliceThickness']],
     'FOV': lambda header: header['resolution'][:2] * header['AcquisitionMatrix'], # Bug: Is "PixelSpacing" also ordered as frequency/phase like "AcquisitionMatrix" does??
     'orientation': lambda header: ('oblique-' if len(header['slice_orientation'])>3 else '') + {'Sag': 'sagittal', 'Cor': 'coronal', 'Tra': 'transversal'}[header['slice_orientation'][:3]],
-    'GRAPPA': lambda header: int(header['acceleration_factor'][1:]) if 'acceleration_factor' in header and header['acceleration_factor'].startswith('p') else 0,
+    'GRAPPA': lambda header: int(header['acceleration_factor'].split()[0][1:]) if 'acceleration_factor' in header and header['acceleration_factor'].startswith('p') else 0, # TODO: The text can be "p2" or "p2 s4". What does "s4" mean?
     'PhasePartialFourier': lambda header: Siemens['PartialFourier'][header['CSA2']['PhasePartialFourier']],
     'SlicePartialFourier': lambda header: Siemens['PartialFourier'][header['CSA2']['SlicePartialFourier']],
     'MultiBand': lambda header: int(re.search('MB(\d+)', header['ImageComments']).group(1)) if 'MB' in header['ImageComments'] else None, # https://github.com/CMRR-C2P/MB/issues/223
@@ -279,7 +279,7 @@ def sort_dicom_series(folder):
     for study_id in np.unique([header['StudyID'] for header in headers]):
         study = OrderedDict()
         for series_id in np.unique([header['SeriesNumber'] for header in headers if header['StudyID'] == study_id]):
-            series = sorted([(path.split(header['filename'])[1], header['InstanceNumber']) for header in headers \
+            series = sorted([(path.basename(header['filename']), header['InstanceNumber']) for header in headers \
                 if header['StudyID']==study_id and header['SeriesNumber']==series_id], key=lambda x: x[1])
             study['{0:04d}'.format(series_id)] = [x[0] for x in series]
         studies.append(study)

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
 import os, glob, shutil, shlex, re, subprocess, multiprocessing, warnings
+import json, copy
 from os import path
 from collections import OrderedDict
 import numpy as np
@@ -81,8 +82,13 @@ def find_best_reverse(seq_info, forward='func', reverse='reverse', for_out='epi{
 def all_finished(outputs):
     if isinstance(outputs, dict):
         outputs = [outputs]
+    def check_exist(f):
+        try:
+            return path.exists(f)
+        except TypeError:
+            return all(path.exists(ff) for ff in f)
     for output in outputs:
-        output['finished'] = np.all([(path.exists(f) if n.endswith('_file') else (f is not None)) for n, f in output.items()])
+        output['finished'] = np.all([(check_exist(f) if n.endswith('_file') else (f is not None)) for n, f in output.items()])
     finished = np.all([output['finished'] for output in outputs])
     return finished
 
@@ -167,6 +173,17 @@ def blip_unwarp(forward_file, reverse_file, reverse_loc, out_file, PE_axis='AP',
     shutil.rmtree(temp_dir)
     all_finished(outputs)
     return outputs
+
+
+def correct_bias_field(in_file, out_file, n_jobs=None):
+    if n_jobs is None:
+        n_jobs = DEFAULT_JOBS
+    if shutil.which('N4BiasFieldCorrection') is None:
+        raise ValueError('>> ANTs is not (correctly) installed. So cannot use N4BiasFieldCorrection.')
+    prefix, ext = afni.split_out_file(out_file)
+    os.environ['ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS'] = str(n_jobs*2) # N4BiasFieldCorrection tends to use half of max
+    utils.run(f"N4BiasFieldCorrection -d 3 -i {in_file} -s 2 -o \
+        '[{prefix}{ext},{prefix}_bias{ext}]'")
 
 
 def correct_motion(base_file, in_file, out_file, algorithm='3dvolreg', mode='rigid'):
@@ -269,6 +286,26 @@ def apply_transforms(transforms, base_file, in_file, out_file, interp=None, res=
     return outputs
 
 
+def resample(in_file, out_file, res=None, base_file=None, interp=None):
+    temp_dir = utils.temp_folder()
+    identity = f"{temp_dir}/identity.aff12.1D"
+    io.write_affine(identity, np.c_[np.diag([1,1,1]), np.zeros(3)])
+    if base_file is None:
+        if res is None:
+            raise ValueError('>> You must either specify `res` or `base_file`.')
+        base_file = f"{temp_dir}/base.nii"
+        dxyz = ' '.join([f"{d:g}" for d in res])
+        utils.run(f"3dresample -rmode NN -dxyz {dxyz} -prefix {base_file} -overwrite -input {in_file}")
+        apply_transforms([identity], base_file, in_file, out_file, interp=interp)
+    else:
+        if res is None:
+            apply_transforms([identity], base_file, in_file, out_file, interp=interp)
+        else:
+            raise NotImplementedError
+
+    shutil.rmtree(temp_dir)
+
+
 def manual_transform(in_file, out_file, shift=None, rotate=None, scale=None, shear=None, interp=None):
     '''
     shift : [x, y, z] in mm
@@ -327,7 +364,8 @@ def nudge_cmd2mat(nudge_cmd, in_file, return_inverse=False):
     if match:
         I, R, A, S, L, P = match.groups()
         temp_file = utils.temp_prefix(suffix='.nii')
-        utils.run(f"3drotate -NN -clipit -rotate {I} {R} {A} -ashift {S} {L} {P} -prefix {temp_file} {in_file}")
+        # Note that we have to explicitly specify output dir, otherwise it will be put in input dir...
+        utils.run(f"3drotate -NN -clipit -rotate {I} {R} {A} -ashift {S} {L} {P} -prefix ./{temp_file} {in_file}")
         # Extract the matrix that will apply the same rotation as the command
         mat = afni.check_output(f"cat_matvec '{temp_file}::ROTATE_MATVEC_000000' -I -ONELINE")[-2]
         # As well as its inverse for convenience
@@ -343,8 +381,15 @@ def nudge_cmd2mat(nudge_cmd, in_file, return_inverse=False):
         raise ValueError(f"`nudge_cmd` should contain something like '-rotate 0.00I -20.00R 0.00A -ashift 13.95S -2.00L -11.01P'")
 
 
+def copy_S2E_mat(src, dst):
+    # This is the S2E mat in afni sense (because when aligning sv to exp, source=sv, base=exp)
+    utils.run(f"3drefit -atrcopy {src} ALLINEATE_MATVEC_S2B_000000 {dst}")
+    # This is the E2S mat
+    utils.run(f"3drefit -atrcopy {src} ALLINEATE_MATVEC_B2S_000000 {dst}")
+
+
 def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kws=None, volreg_kws=None, 
-    template=None, template_pool=None, final_resample=True, final_res=None):
+    template=None, template_pool=None, template_candidate_runs=None, final_resample=True, final_res=None):
     '''
     Parameters
     ----------
@@ -439,14 +484,24 @@ def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kw
             # Correct motion: first pass
             utils.run(f"3dTcat -prefix {temp_dir}/template.pass1.nii -overwrite {files[0][0]}'[{files[0][1]}]'")
             pc(pc.run(correct_motion, f"{temp_dir}/template.pass1.nii", files[k][0], f"{prefix}.pass1.nii", **volreg_kws) for k, prefix in enumerate(temp_prefixs))
+            # Consider only template_candidate_runs
+            n_all_runs = len(temp_prefixs)
+            if template_candidate_runs is None:
+                template_candidate_runs = list(range(n_all_runs))
             # Find best template
-            Xs = [np.loadtxt(f"{prefix}.pass1.param.1D") for prefix in temp_prefixs]
+            Xs = [np.loadtxt(f"{prefix}.pass1.param.1D") for k, prefix in enumerate(temp_prefixs) if k in template_candidate_runs]
             XX = np.vstack(Xs)
             idx = np.argmin([np.sqrt(np.sum(np.linalg.norm(XX-x, axis=1)**2)) for x in XX])
             L = [X.shape[0] for X in Xs]
             D = idx - np.cumsum(L)
             run_idx = np.nonzero(D<0)[0][0]
             TR_idx = L[run_idx] + D[run_idx]
+            # Get run_idx within all runs from run_idx within "candidate" runs
+            all_runs = np.zeros(n_all_runs)
+            sel_runs = all_runs[template_candidate_runs]
+            sel_runs[run_idx] = 1
+            all_runs[template_candidate_runs] = sel_runs
+            run_idx = np.nonzero(all_runs)[0][0]
         else:
             run_idx, TR_idx = template
         base_file = files[run_idx][0]
@@ -485,7 +540,92 @@ def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kw
     return outputs
 
 
-def prep_mp2rage(dicom_dirs, out_file='T1.nii', unwarp=False, dicom_ext='.IMA'):
+def retrieve_mp2rage_labels(dicom_dirs, dicom_ext='.IMA'):
+    '''
+    Retrieve mp2rage subvolume labels like UNI, ND, etc.
+    
+    Parameters
+    ----------
+    dicom_dirs : list or str
+        A list of dicom file folders, e.g., ['T101', 'T102', ...], or 
+        a glob pattern like 'raw_fmri/T1??'
+    
+    Returns
+    -------
+    label2dicom_dir : OrderedDict
+        label -> (index, dicom_dir)
+    '''
+    if isinstance(dicom_dirs, six.string_types):
+        dicom_dirs = [d for d in sorted(glob.glob(dicom_dirs)) if path.isdir(d)]
+    label2dicom_dir = OrderedDict()
+    for index, dicom_dir in enumerate(dicom_dirs):
+        f = glob.glob(f"{dicom_dir}/*{dicom_ext}")[0]
+        header = dicom.parse_dicom_header(f)
+        label = header['SeriesDescription'][len(header['ProtocolName'])+1:]
+        label2dicom_dir[label] = (index, dicom_dir)
+    return label2dicom_dir
+
+
+def assign_mp2rage_labels(T1s, dicom_dirs, dicom_ext='.IMA'):
+    if isinstance(T1s, six.string_types):
+        T1s = sorted(glob.glob(T1s))
+    labels = list(retrieve_mp2rage_labels(dicom_dirs, dicom_ext=dicom_ext).keys())
+    assert(len(T1s) == len(labels))
+    for T1, label in zip(T1s, labels):
+        afni.set_attribute(T1, 'mp2rage_label', label)
+
+
+def create_mp2rage_SNR_mask(T1s, out_file):
+    temp_dir = utils.temp_folder()
+    out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True, trailing_slash=True)
+    outputs = {
+        'out_file': f"{out_dir}{prefix}{ext}",
+        'thres_file': f"{out_dir}{prefix}_thres{ext}",
+        'ths': None,
+        'y': None,
+        'th': None,
+    }
+    # Retrieve mp2rage labels like INV2_ND, UNI_Images, etc.
+    if isinstance(T1s, six.string_types):
+        T1s = sorted(glob.glob(T1s))
+    label2T1 = OrderedDict((afni.get_attribute(T1, 'mp2rage_label'), (k, T1)) for k, T1 in enumerate(T1s))
+    # Smooth INV2_ND to estimate the intensity profile
+    utils.run(f"3dmerge -1blur_fwhm 6 -doall -prefix {outputs['thres_file']} -overwrite {label2T1['INV2_ND'][1]}")
+    INV2 = io.read_vol(outputs['thres_file']).ravel()
+    UNI = io.read_vol(label2T1['UNI_Images'][1]).ravel()
+    # Determine best threshold
+    # Exploit the fact that: 1) Noisy UNI is like Gaussian 2) Gaussian has large entropy/std
+    ths = []
+    y = []
+    intensities = np.percentile(INV2, np.arange(100))
+    for k, th in enumerate(intensities[1:], start=1):
+        if th - intensities[k-1] < 5:
+            continue
+        ths.append(th)
+        # y.append(stats.entropy(np.unique(UNI[INV2>th], return_counts=True)[1]))
+        y.append(np.std(UNI[INV2>th]))
+    th = ths[np.argmax(y)]
+    outputs['ths'] = ths
+    outputs['y'] = y
+    outputs['th'] = th
+    # Create mask
+    utils.run(f"3dcalc -a {outputs['thres_file']} -expr 'step(a-{th})' -prefix {outputs['out_file']} -overwrite")
+    # Modified mask (restricting to region with high correlation)
+    utils.run(f"3dLocalBistat -nbhd 'SPHERE(3)' -stat pearson -mask {outputs['out_file']} \
+        -prefix {temp_dir}/corr.nii -overwrite {label2T1['INV2_ND'][1]} {label2T1['UNI_Images'][1]}")
+    utils.run(f"3dcalc -a {temp_dir}/corr.nii -expr 'step(a-0.3)' -prefix {temp_dir}/good.nii -overwrite")
+    utils.run(f"3dmerge -1blur_fwhm 10 -doall -prefix {temp_dir}/good_smoothed.nii -overwrite {temp_dir}/good.nii")
+    utils.run(f"3dcalc -a {temp_dir}/good_smoothed.nii -expr 'step(a-0.3)' -prefix {temp_dir}/good_mask.nii -overwrite")
+    utils.run(f"3dmask_tool -input {temp_dir}/good_mask.nii -prefix {temp_dir}/good_mask.nii -overwrite -dilate_input 5")
+    utils.run(f"3dcalc -a {outputs['out_file']} -b {temp_dir}/good_mask.nii -expr 'step(a)*step(b)' \
+        -prefix {outputs['out_file']} -overwrite")
+    
+    shutil.rmtree(temp_dir)
+    all_finished(outputs)
+    return outputs
+
+
+def prep_mp2rage(dicom_dirs, out_file='T1.nii', unwarp=True, dicom_ext='.IMA'):
     '''Convert dicom files and remove the noise pattern outside the brain.
 
     dicom_dirs : list or str
@@ -508,18 +648,11 @@ def prep_mp2rage(dicom_dirs, out_file='T1.nii', unwarp=False, dicom_ext='.IMA'):
     if not all_finished(outputs):
         temp_dir = utils.temp_folder()
         # Retrieve dicom information (for labels like UNI, ND, etc.)
-        if isinstance(dicom_dirs, six.string_types):
-            dicom_dirs = glob.glob(dicom_dirs)    
-        label2dicom_dir = OrderedDict()
-        for dicom_dir in dicom_dirs:
-            f = glob.glob(f"{dicom_dir}/*{dicom_ext}")[0]
-            header = dicom.parse_dicom_header(f)
-            label = header['SeriesDescription'][len(header['ProtocolName'])+1:]
-            label2dicom_dir[label] = dicom_dir
+        label2dicom_dir = retrieve_mp2rage_labels(dicom_dirs, dicom_ext=dicom_ext)
 
         # Convert dicom files
         for label in ['UNI_Images', 'INV2_ND', 'INV2']:
-            pc.run(io.convert_dicom, label2dicom_dir[label], f"{temp_dir}/{label}.nii", dicom_ext=dicom_ext)
+            pc.run(io.convert_dicom, label2dicom_dir[label][1], f"{temp_dir}/{label}.nii", dicom_ext=dicom_ext)
         pc.wait()
 
         # Generate skull strip mask
@@ -560,24 +693,67 @@ def prep_mp2rage(dicom_dirs, out_file='T1.nii', unwarp=False, dicom_ext='.IMA'):
     return outputs
 
 
-def prep_mp2rages(data_dir, sessions=None, subdir_pattern='T1??', **kwargs):
+def prep_mp2rages(data_dir, sessions=None, subdir_pattern='T1??', unwarp=True, **kwargs):
     if sessions is None:
         sessions = dicom_report.inspect_mp2rage(data_dir, subdir_pattern=subdir_pattern).session
     pc = utils.PooledCaller(pool_size=4)
     for session_dir in [f'{data_dir}/{session}' for session in sessions]:
         out_file = kwargs.pop('out_file') if 'out_file' in kwargs else 'T1.nii'
-        pc.run(prep_mp2rage, f'{session_dir}/{subdir_pattern}', out_file=f'{session_dir}/{out_file}', **kwargs)
+        pc.run(prep_mp2rage, f'{session_dir}/{subdir_pattern}', out_file=f'{session_dir}/{out_file}', unwarp=unwarp, **kwargs)
     outputs = pc.wait()
     return OrderedDict([(session, output) for session, output in zip(sessions, outputs)])
 
 
-def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=False, V1=True):
+def average_anat(T1s, out_file, template_idx=0, T1s_ns=None, weight=None):
+    prefix, ext = afni.split_out_file(out_file)
+    os.makedirs(prefix, exist_ok=True)
+    N = len(T1s)
+    pc = utils.PooledCaller()
+    outputs = {
+        'out_file': [f"{prefix}/T1{k+1:02d}.nii" for k in range(N)],
+        'ns_file': [f"{prefix}/T1{k+1:02d}_ns.nii" for k in range(N)],
+        'cost': None,
+    }
+    if T1s_ns is None:
+        T1s_ns = [f"{prefix}/T1{k+1:02d}_ns.nii" for k in range(N)]
+        pc(pc.run(skullstrip, T1, T1_ns) for T1, T1_ns in zip(T1s, T1s_ns))
+    elif T1s_ns == 'default':
+        T1s_ns = [afni.insert_suffix(T1, '_ns') for T1 in T1s]
+    for k in range(N):
+        if k == template_idx:
+            pc.run(copy_dset, T1s_ns[k], outputs['ns_file'][k])
+        else:
+            pc.run(align_anat, T1s_ns[template_idx], T1s_ns[k], outputs['ns_file'][k], strip=False)
+    align_outputs = pc.wait(pool_size=4)
+    outputs['cost'] = [(o['cost']['lpa'] if o is not None else np.nan) for o in align_outputs]
+    for k in range(N):
+        if k == template_idx:
+            pc.run(copy_dset, T1s[template_idx], outputs['out_file'][k])
+        else:
+            pc.run(apply_transforms, align_outputs[k]['xform_file'], T1s[template_idx], T1s[k], outputs['out_file'][k])
+    pc.wait()
+    if weight is None:
+        pc.run1(f"3dMean -prefix {prefix}{ext} -overwrite {' '.join(outputs['out_file'])}")
+    else:
+        raise NotImplementedError()
+
+    all_finished(outputs)
+    return outputs
+
+
+def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, V1=True, fs_ver=None):
+    '''
+    Parameters
+    ----------
+    fs_ver : {'v6', 'v6.hcp', 'skip'}
+    '''
     if isinstance(T1s, six.string_types):
         T1s = [T1s]
     out_dir = path.realpath(out_dir)
     subjects_dir, subj = path.split(out_dir) # Environment variable may need full path
     temp_dir = utils.temp_folder()
     outputs = {
+        'subj_dir': out_dir,
         'suma_dir': f"{out_dir}/SUMA",
     }
     # Setup FreeSurfer SUBJECTS_DIR
@@ -590,27 +766,43 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=False, V1=True):
     expert_file = f"{temp_dir}/expert_options.txt"
     with open(expert_file, 'w') as fo:
         fo.write('mris_inflate -n 30\n')
-    utils.run(f"recon-all -s {subj} \
-        {' '.join([f'-i {T1}' for T1 in T1s])} \
-        {f'-T2 {T2} -T2pial' if T2 is not None else ''} \
-        {f'-FLAIR {FLAIR} -FLAIRpial' if FLAIR is not None else ''} \
-        -all -hires -expert {expert_file} \
-        -parallel -openmp {DEFAULT_JOBS} \
-        {'-label-v1' if V1 else ''}", 
-        error_pattern='', goal_pattern='recon-all .+ finished without error')
+    if fs_ver is None:
+        fs_ver = 'v6' # {'v6', 'v6.hcp'}
+    if fs_ver == 'v6':
+        utils.run(f"recon-all -s {subj} \
+            {' '.join([f'-i {T1}' for T1 in T1s])} \
+            {f'-T2 {T2} -T2pial' if T2 is not None else ''} \
+            {f'-FLAIR {FLAIR} -FLAIRpial' if FLAIR is not None else ''} \
+            -all -hires -expert {expert_file} \
+            -parallel -openmp {DEFAULT_JOBS} \
+            {'-label-v1' if V1 else ''}", 
+            error_pattern='', goal_pattern='recon-all .+ finished without error')
+    elif fs_ver == 'v6.hcp':
+        utils.run(f"recon-all.v6.hires -s {subj} \
+            {' '.join([f'-i {T1}' for T1 in T1s])} \
+            {f'-T2 {T2} -T2pial' if T2 is not None else ''} \
+            {f'-FLAIR {FLAIR} -FLAIRpial' if FLAIR is not None else ''} \
+            -all -conf2hires -expert {expert_file} \
+            -parallel -openmp {DEFAULT_JOBS} \
+            {'-label-v1' if V1 else ''}", 
+            error_pattern='', goal_pattern='recon-all .+ finished without error')
+    elif fs_ver == 'skip':
+        pass
     # Make SUMA dir and viewing script
     create_suma_dir(out_dir, NIFTI=False)
     os.rename(outputs['suma_dir'], outputs['suma_dir']+'_woNIFTI')
     create_suma_dir(out_dir, NIFTI=True)
     os.rename(outputs['suma_dir'], outputs['suma_dir']+'_NIFTI')
     os.symlink('SUMA'+('_NIFTI' if NIFTI else '_woNIFTI'), outputs['suma_dir']) # This will create a relative link
+    # Create HCP retinotopic atlas (benson14 template) using docker
+    create_hcp_retinotopic_atlas(out_dir, NIFTI=NIFTI)
 
     shutil.rmtree(temp_dir)
     all_finished(outputs)
     return outputs
 
 
-def create_suma_dir(subj_dir, NIFTI=False):
+def create_suma_dir(subj_dir, NIFTI=True):
     subj = path.split(subj_dir)[1]
     outputs = {
         'suma_dir': f"{subj_dir}/SUMA",
@@ -623,6 +815,52 @@ def create_suma_dir(subj_dir, NIFTI=False):
     with open(outputs['viewing_script'], 'w') as fo:
         fo.write("afni -niml &\n")
         fo.write(f"suma -spec {subj}_both.spec -sv {subj}_SurfVol{'.nii' if NIFTI else '+orig'} &\n")
+    all_finished(outputs)
+    return outputs
+
+
+def create_suma_script(spec_file, surf_vol, out_file, use_relpath=False):
+    if use_relpath:
+        out_dir = path.split(out_file)[0]
+        spec_file = path.relpath(spec_file, out_dir)
+        surf_vol = path.relpath(surf_vol, out_dir)
+    with open(out_file, 'w') as fo:
+        fo.write("afni -niml &\n")
+        fo.write(f"suma -spec {spec_file} -sv {surf_vol} &\n")
+
+
+def create_hcp_retinotopic_atlas(subj_dir, suma='SUMA', NIFTI=True):
+    '''
+    Create HCP retinotopic atlas (benson14 template) using docker,
+    and convert the volume and surface datasets into SUMA format.
+    '''
+    try:
+        utils.run(f"docker image list", goal_pattern='nben/neuropythy')
+    except RuntimeError as err:
+        print('** Please check whether docker desktop is running.')
+        print('** Skip HCP retinotopic atlas generation for now...')
+        return
+    subj_dir = path.realpath(subj_dir)
+    outputs = {
+        'varea_file': f"{subj_dir}/{suma}/benson14_varea.nii.gz",
+        'angle_file': f"{subj_dir}/{suma}/benson14_angle.nii.gz",
+        'eccen_file': f"{subj_dir}/{suma}/benson14_eccen.nii.gz",
+        'sigma_file': f"{subj_dir}/{suma}/benson14_sigma.nii.gz",
+    }
+    # Generate benson14 atlas (if necessary)
+    subjects_dir, subjid = path.split(subj_dir)
+    if not utils.exists(f'{subj_dir}/mri/benson14_varea.mgz'):
+        utils.run(f"docker run -it --rm -v {subjects_dir}:/subjects nben/neuropythy:latest \
+            benson14_retinotopy --verbose {subjid}")
+    # Convert benson14 atlas to SUMA format
+    utils.run(f"mripy_curv2dset.ipy -s {subj_dir} --suma_dir {subj_dir}/{suma} -i benson14")
+    # Redo conversion if high density SUMA is detected
+    nodes1 = io.read_surf_mesh(f"{subj_dir}/{suma}/lh.inflated{'.gii' if NIFTI else '.asc'}")[0]
+    nodes2 = io.read_surf_data(f"{subj_dir}/{suma}/lh.benson14_varea.niml.dset")[0]
+    if len(nodes1) != len(nodes2): # Likely to be a high density SUMA, redo convertion
+        utils.run(f"mripy_curv2dset.ipy -s {subj_dir} --suma_dir {subj_dir}/{suma} \
+            -i benson14 -m lh.inflated{'.gii' if NIFTI else '.asc'}")
+
     all_finished(outputs)
     return outputs
 
@@ -666,7 +904,7 @@ def irregular_resample(transforms, xyz, in_file, order=3):
     return v
 
 
-def resample_to_surface(transforms, surfaces, in_file, out_files=None, mask_file=None, jobs=1, **kwargs):
+def resample_to_surface(transforms, surfaces, in_file, out_files=None, mask_file=None, n_jobs=1, **kwargs):
     '''
     Parameters
     ----------
@@ -698,7 +936,7 @@ def resample_to_surface(transforms, surfaces, in_file, out_files=None, mask_file
         mask_nodes = mask_nodes[mask_values!=0]
     else:
         mask_nodes = slice(None)
-    pc = utils.PooledCaller(pool_size=jobs)
+    pc = utils.PooledCaller(pool_size=n_jobs)
     for sid, surf_file in enumerate(surfaces):
         print(f">> Mapping {path.basename(in_file)} onto {path.basename(surf_file)}...")
         verts = io.read_surf_mesh(surf_file)[0] # Assume that this is NOT a partial surface mesh
@@ -707,7 +945,7 @@ def resample_to_surface(transforms, surfaces, in_file, out_files=None, mask_file
         assert(isinstance(mask_nodes, slice) or np.all(nodes==mask_nodes)) # TODO: Better compatibility check between mesh and mask
         xyz = verts[mask_nodes,:] * np.r_[-1,-1,1] # From FreeSurfer's RAS+ to AFNI/DICOM's RAI
         n_xyz = xyz.shape[0]
-        if jobs == 1:
+        if n_jobs == 1:
             v = np.zeros(shape=[n_xyz, n_vols])
             for vid in range(n_vols):
                 xforms = [xform[vid] if isinstance(xform, np.ndarray) and xform.ndim==3 else xform for xform in transforms]
@@ -930,7 +1168,10 @@ def create_vessel_mask_PDGRE(PD, GRE, out_file, PD_div_GRE=None, ath=300, rth=5,
     return outputs
 
 
-def scale(in_file, out_file, mask_file=None):
+def scale(in_file, out_file, mask_file=None, dtype=None):
+    dtypes = {float: 'float', int: 'short'}
+    if dtype in dtypes:
+        dtype = dtypes[dtype]
     prefix, ext = afni.split_out_file(out_file)
     outputs = {'out_file': f"{prefix}{ext}"}
     mean_file = utils.temp_prefix(suffix=ext)
@@ -938,11 +1179,26 @@ def scale(in_file, out_file, mask_file=None):
     if mask_file is not None:
         utils.run(f"3dcalc -a {in_file} -b {mean_file} -c {mask_file} \
             -expr 'min(200,a/b*100)*step(a)*step(b)*c' \
+            {f'-datum {dtype}' if dtype is not None else ''} \
             -prefix {out_file} -overwrite")
     else:
         utils.run(f"3dcalc -a {in_file} -b {mean_file} \
             -expr 'min(200,a/b*100)*step(a)*step(b)' \
+            {f'-datum {dtype}' if dtype is not None else ''} \
             -prefix {outputs['out_file']} -overwrite")
+    os.remove(mean_file)
+    all_finished(outputs)
+    return outputs
+
+
+def zscore(in_file, out_file):
+    prefix, ext = afni.split_out_file(out_file)
+    outputs = {'out_file': f"{prefix}{ext}"}
+    mean_file = utils.temp_prefix(suffix=ext)
+    utils.run(f"3dTstat -mean -stdev -prefix {mean_file} -overwrite {in_file}")
+    utils.run(f"3dcalc -a {in_file} -b {mean_file}'[0]' -c {mean_file}'[1]' \
+        -expr '(a-b)/c*step(b)' \
+        -prefix {outputs['out_file']} -overwrite")
     os.remove(mean_file)
     all_finished(outputs)
     return outputs
@@ -959,7 +1215,366 @@ def skullstrip(in_file, out_file=None):
     return outputs
 
 
-def align_anat(base_file, in_file, out_file, strip_base=True, strip_in=True, method=None, cost=None, n_params=None, interp=None):
+def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask=None, 
+    base_mask_SyN=None, in_mask_SyN=None, preset=None):
+    '''
+    Nonlinearly align `in_file` to `base_file` using ANTs' SyN method via antsRegistration.
+
+    Examples
+    --------
+    1. Align MNI template to T1_al using default preset. Skullstrip T1_al. 
+        Apply inversed mask (1-mask) to MNI template at the nonlinear (SyN) stage.
+        >>> prep.align_ants("T1_al.nii", "MNI152_2009_template.nii.gz", "MNI_al.nii", strip="base", in_mask_SyN="mask.nii -I")
+    2. Align T1_ns_al.nii to MNI template using "test" preset.
+        For a quick test of the parameters in a few minutes. The result will not be good, but should not be weird.
+        >>> prep.align_ants("MNI152_2009_template.nii.gz", "T1_ns_al.nii", "T1_ns_MNI.nii", preset="test")
+
+    Parameters
+    ----------
+    preset : str
+        None | 'default' | 'test' | 'path/to/my/preset.json'
+        For production, just leave it as None or use the 'default' presest (est. time: 3 hr).
+        For quick test, use the 'test' presest (est. time: 3 min).
+
+    Returns
+    -------
+    outputs : dict
+        outputs['transform'] : ANTsTransform object
+            You can apply the forward or inverse transform to other volumes. E.g., 
+            >>> outputs['transform'].apply(in_file, out_file)
+            >>> outputs['transform'].apply_inverse(in_file, out_file)
+    '''
+    temp_dir = utils.temp_folder()
+    pc = utils.PooledCaller()
+    prefix, ext = afni.split_out_file(out_file)
+    outputs = {
+        'out_file': f"{prefix}{ext}",
+        'fwd_affine': f"{prefix}_0GenericAffine.mat",
+        'fwd_warp': f"{prefix}_1Warp.nii.gz",
+        'inv_warp': f"{prefix}_1InverseWarp.nii.gz",
+        'fwd_warped': f"{prefix}_fwd_warped.nii.gz",
+        'inv_warped': f"{prefix}_inv_warped.nii.gz",
+    }
+    # Strip and sanitize base_file or in_file if required
+    def sanitize_input(in_file):
+        '''
+        It is important that the input is 3D (not 4D) dataset.
+        But it is OK that the input is not in ORIG space (e.g., MNI), or RAS+/NIFTI orientation.
+        Otherwise antsRegistration will spit WEIRD result, e.g., rotate cerebellum to forehead...
+        '''
+        if afni.get_dims(in_file)[3] > 1:
+            print(f'+* WARNING: "{in_file}" contains multiple volumes. Only the first volume will be considered in the registration.')
+            utils.run(f"3dTcat -prefix {in_file} -overwrite {in_file}'[0]'")
+    if strip is None:
+        strip = [False, False]
+    if isinstance(strip, str):
+        strip = {'both': [True, True], 'base': [True, False], 'input': [False, True], 'none': [False, False]}[strip]
+    strip = [((skullstrip if s else copy_dset) if isinstance(s, bool) else s) for s in strip]
+    fixed = f"{temp_dir}/base.nii"
+    moving = f"{temp_dir}/input.nii"
+    D1 = pc.run(strip[0], base_file, out_file=fixed)
+    D2 = pc.run(strip[1], in_file, out_file=moving)
+    pc.run(sanitize_input, fixed, _depends=[D1])
+    pc.run(sanitize_input, moving, _depends=[D2])
+    pc.wait()
+    # Prepare masks (e.g., strip, inversion, etc.)
+    def populate_mask(mask_file, temp_dir=None, ref_file=None):
+        if mask_file is None:
+            out_file = 'None'
+        elif mask_file == 'strip':
+            out_file = utils.temp_prefix(prefix=f"{temp_dir}/tmp_", suffix='.nii')
+            skullstrip(ref_file, out_file)
+            utils.run(f"3dcalc -a {out_file} -expr 'step(a)' -prefix {out_file} -overwrite")
+        elif mask_file.endswith(' -I'):
+            out_file = utils.temp_prefix(prefix=f"{temp_dir}/tmp_", suffix='.nii')
+            utils.run(f"3dcalc -a {mask_file[:-3]} -expr '1-a' -prefix {out_file} -overwrite")
+        else:
+            outputs = mask_file
+        return out_file
+    pc.run(populate_mask, base_mask, temp_dir, ref_file=base_file)
+    pc.run(populate_mask, in_mask, temp_dir, ref_file=in_file)
+    pc.run(populate_mask, base_mask_SyN, temp_dir, ref_file=base_file)
+    pc.run(populate_mask, in_mask_SyN, temp_dir, ref_file=in_file)
+    base_mask, in_mask, base_mask_SyN, in_mask_SyN = pc.wait()
+    # Estimate transforms
+    os.environ['ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS'] = str(DEFAULT_JOBS)
+    if preset is None:
+        pc.run1(f"antsRegistration -d 3 --float 1 --verbose \
+            --output [ {prefix}_, {outputs['fwd_warped']}, {outputs['inv_warped']} ] \
+            --interpolation LanczosWindowedSinc \
+            --collapse-output-transforms 1 \
+            --initial-moving-transform [ {fixed}, {moving}, 1 ]  \
+            --winsorize-image-intensities [0.005,0.995] \
+            --use-histogram-matching 1 \
+            --transform translation[ 0.1 ] \
+                --metric mattes[ {fixed}, {moving}, 1, 32, regular, 0.3 ] \
+                --convergence [ 1000x300x100, 1e-6, 10 ]  \
+                --smoothing-sigmas 4x2x1vox  \
+                --shrink-factors 8x4x2 \
+                --use-estimate-learning-rate-once 1 \
+                --masks [ {base_mask}, {in_mask} ] \
+            -t rigid[ 0.1 ] \
+                -m mattes[ {fixed}, {moving}, 1, 32, regular, 0.3 ] \
+                -c [ 1000x300x100, 1e-6, 10 ]  \
+                -s 4x2x1vox  \
+                -f 4x2x1 -l 1 \
+                -x [ {base_mask}, {in_mask} ] \
+            -t affine[ 0.1 ] \
+                -m mattes[ {fixed}, {moving}, 1, 32, regular, 0.3 ] \
+                -c [ 1000x300x100, 1e-6, 10 ]  \
+                -s 2x1x0vox  \
+                -f 4x2x1 -l 1 \
+                -x [ {base_mask}, {in_mask} ] \
+            -t SyN[ 0.1, 3, 0 ] \
+                -m mattes[ {fixed}, {moving}, 0.5 , 32 ] \
+                -m cc[ {fixed}, {moving}, 0.5 , 4 ] \
+                -c [ 100x100x50, 1e-6, 10 ]  \
+                -s 1x0.5x0vox  \
+                -f 4x2x1 -l 1 \
+                -x [ {base_mask_SyN}, {in_mask_SyN} ]", _error_pattern='error')
+    else:
+        if isinstance(preset, str):
+            if not preset.endswith('.json'): # Built-in preset (located in mripy/data/align_ants_presets)
+                preset = f"{utils.package_dir}/data/align_ants_presets/{preset}.json"
+            # Otherwise should be the fullpath to a custom .json file
+            with open(preset) as json_file:
+                preset = json.load(json_file)
+        # `preset` is now a dict
+        # Generate antsRegistration command line
+        cmd =  f"antsRegistration -d {preset['dimension']} --float 1 --verbose \
+            --output [ {prefix}_, {outputs['fwd_warped']}, {outputs['inv_warped']} ] \
+            --interpolation {preset['interpolation']} \
+            --collapse-output-transforms 1 \
+            --write-composite-transform {int(preset['write_composite_transform'])} \
+            --initial-moving-transform [ {fixed}, {moving}, 1 ]  \
+            --winsorize-image-intensities [ {preset['winsorize_lower_quantile']}, {preset['winsorize_upper_quantile']} ] "
+        for k in range(len(preset['transforms'])):
+            cmd += f"--transform {preset['transforms'][k]}[ {', '.join([f'{x:g}' for x in preset['transform_parameters'][k]])} ] \
+                --metric {preset['metric'][k]}[ {fixed}, {moving}, {preset['metric_weight'][k]}, {preset['radius_or_number_of_bins'][k]}, {preset['sampling_strategy'][k]}, {preset['sampling_percentage'][k]} ] \
+                --convergence [ {'x'.join([str(int(x)) for x in preset['number_of_iterations'][k]])}, {preset['convergence_threshold'][k]}, {preset['convergence_window_size'][k]} ]  \
+                --smoothing-sigmas {'x'.join([str(int(x)) for x in preset['smoothing_sigmas'][k]])}{preset['sigma_units'][k]}  \
+                --shrink-factors {'x'.join([str(int(x)) for x in preset['shrink_factors'][k]])} \
+                --use-histogram-matching {int(preset['use_histogram_matching'][k])} \
+                --use-estimate-learning-rate-once {int(preset['use_estimate_learning_rate_once'][k])} \
+                --masks [ {base_mask_SyN if preset['transforms'][k].lower()=='syn' else base_mask}, {in_mask_SyN if preset['transforms'][k].lower()=='syn' else in_mask} ] "
+        pc.run1(cmd, _error_pattern='error')
+    # Apply transforms
+    sanitized = f"{temp_dir}/sanitized.nii"
+    copy_dset(in_file, sanitized)
+    sanitize_input(sanitized)
+    apply_ants([outputs['fwd_warp'], outputs['fwd_affine']], base_file, sanitized, outputs['out_file'])
+    shutil.rmtree(temp_dir)
+    all_finished(outputs)
+    outputs['base_file'] = base_file
+    outputs['transform'] = ANTsTransform.from_align_ants(outputs)
+    outputs['transform_file'] = f"{prefix}_transform.json"
+    outputs['transform'].to_json(outputs['transform_file'])
+    outputs['pc'] = pc
+    return outputs
+
+
+def apply_ants(transforms, base_file, in_file, out_file, interp=None, dim=None, image_type=None):
+    '''
+    Parameters
+    ----------
+    transforms : list of file names
+        Online matrix inversion is supported as "*_0GenericAffine.mat -I".
+    base_file : str
+        If None, apply transforms to point list using `antsApplyTransformsToPoints`,
+        and `in_file` is expected to be a *.csv file.
+        Otherwise, apply transforms to image using `antsApplyTransforms`.
+    interp : str
+        LanczosWindowedSinc, NearestNeighbor, Linear, BSpline[<order=3>], etc.
+    
+    Note that for volumes, last transform applies first (pulling from base grid), 
+    as in AFNI, as well as in ANTs command line.
+    However for point lists, FIRST transform applies first (pushing input points),
+    and INVERSE transforms should be used compared with volume case, as in ANTs.
+    '''
+    if interp is None:
+        interp = 'LanczosWindowedSinc'
+    prefix, ext = afni.split_out_file(out_file)
+    outputs = {'out_file': f"{prefix}{ext}"}
+    xform_cmds = []
+    for transform in transforms:
+        if transform.endswith(' -I'):
+            xform_cmds.append(f"-t [ {transform[:-3]}, 1 ]")
+        else:
+            xform_cmds.append(f"-t {transform}")
+    if base_file is None or path.splitext(in_file)[1] in ['.csv']: 
+        # Apply transforms to point list (e.g., surface mesh)
+        data = np.loadtxt(in_file, skiprows=1, delimiter=',')
+        if dim is None:
+            dim = 4 if any(data[:,3]) else 3
+        utils.run(f"antsApplyTransformsToPoints --precision 0 \
+            -i {in_file} -d {dim} \
+            -o {outputs['out_file']} \
+            {' '.join(xform_cmds)}")
+    else: # Apply transforms to image (e.g., 3D volume)
+        if dim is None:
+            # dim = 4 if afni.get_dims(in_file)[3] > 1 else 3
+            dim = 3
+        if image_type is None: # 0/1/2/3 for scalar/vector/tensor/time-series
+            image_type = 3 if afni.get_dims(in_file)[3] > 1 else 0
+        utils.run(f"antsApplyTransforms --float 1 \
+            -r {base_file} -i {in_file} -d {dim} --input-image-type {image_type} \
+            -o {outputs['out_file']} --interpolation {interp} \
+            {' '.join(xform_cmds)}")
+    all_finished(outputs)
+    return outputs
+
+
+class Transform(object):
+    def __init__(self, transforms, base_file=None):
+        '''
+        Parameters
+        ----------
+        transforms : list of (fwd_xform, inv_xform) pairs
+            Transform chain should be specified using "pulling" convention, i.e., 
+            last transform applies first (as in AFNI and ANTs for volumes).
+            Each transform should also be a "pulling" transform from moving to fixed 
+            as generated by AFNI and ANTs.
+            Transforms should be specified by their file names, and inverse transforms 
+            can be specified as "*_0GenericAffine.mat -I" (esp. for affine).
+        '''
+        self.transforms = copy.deepcopy(transforms)
+        self.base_file = base_file
+
+    def inverse(self):
+        transforms = [transform[::-1] for transform in self.transforms[::-1]]
+        return xform.__class__(transforms, base_file=None)
+
+    def rebase(self, base_file):
+        return xform.__class__(self.transforms, base_file=base_file)
+
+    def replace_path(self, p):
+        f = lambda fname: path.join(p, path.basename(fname))
+        self.transforms = [(f(fwd), f(inv)) for fwd, inv in self.transforms]
+        self.base_file = f(self.base_file)
+
+    def to_json(self, fname):
+        with open(fname, 'w') as json_file:
+            json.dump(self.__dict__, json_file)
+
+    @classmethod
+    def from_json(cls, fname, replace_path=False):
+        '''
+        Parameters
+        ----------
+        replace_path: bool
+            Replace path of the transform files according to json file path
+        '''
+        with open(fname) as json_file:
+            data = json.load(json_file)
+        inst = cls(data['transforms'], base_file=data['base_file'])
+        if replace_path:
+            inst.replace_path(path.dirname(fname))
+        return inst
+
+
+class ANTsTransform(Transform):
+    @classmethod
+    def from_align_ants(cls, outputs):
+        transforms = [(path.realpath(outputs['fwd_warp']), path.realpath(outputs['inv_warp'])), 
+                      (path.realpath(outputs['fwd_affine']), path.realpath(outputs['fwd_affine'])+' -I')]
+        return cls(transforms, base_file=path.realpath(outputs['base_file']))
+
+    def apply(self, in_file, out_file, base_file=None, interp=None, **kwargs):
+        '''
+        For volumes, forward transform (from input/moving to base/fixed)
+        '''
+        transforms = [xform_pair[0] for xform_pair in self.transforms]
+        base_file = self.base_file if base_file is None else base_file
+        return apply_ants(transforms, base_file, in_file, out_file, interp=interp, **kwargs)
+
+    def apply_inverse(self, in_file, out_file, base_file=None, interp=None, **kwargs):
+        '''
+        For volumes, inverse transform (from base/fixed to input/moving)
+        '''
+        transforms = [xform_pair[1] for xform_pair in self.transforms[::-1]] # Inverse
+        base_file = self.base_file if base_file is None else base_file
+        return apply_ants(transforms, base_file, in_file, out_file, interp=interp, **kwargs)
+
+    def apply_to_points(self, in_file, out_file):
+        '''
+        For list of points, forward transform (from input/moving to base/fixed)
+        
+        Parameters
+        ----------
+        in_file, out_file : *.csv file with "x,y,z,t" header line.
+        '''
+        return self.apply_inverse(in_file, out_file, base_file=None)
+
+    def apply_inverse_to_points(self, in_file, out_file):
+        '''
+        For list of points, inverse transform (from base/fixed to input/moving)
+
+        Parameters
+        ----------
+        in_file, out_file : *.csv file with "x,y,z,t" header line.
+        '''
+        return self.apply(in_file, out_file, base_file=None)
+
+    def _apply_transform_to_xyz(self, xyz, convention='DICOM', transform='forward'):
+        '''
+        Parameters
+        ----------
+        xyz : Nx3 array
+        convention : 'DICOM' | 'NIFTI'
+        transform : 'forward' | 'inverse'
+        '''
+        temp_file = utils.temp_prefix(suffix='.csv')
+        if convention.upper() in ['NIFTI', 'LPI', 'RAS+']:
+            xyz = xyz * [-1, -1, 1] # To DICOM or RAI or LPS+
+        np.savetxt(temp_file, np.c_[xyz, np.zeros(xyz.shape[0])], delimiter=',', header='x,y,z,t', comments='')
+        if transform == 'forward':
+            self.apply_to_points(temp_file, temp_file)
+        elif transform == 'inverse':
+            self.apply_inverse_to_points(temp_file, temp_file)
+        xyz = np.loadtxt(temp_file, skiprows=1, delimiter=',')[:,:3]
+        if convention.upper() in ['NIFTI', 'LPI', 'RAS+']:
+            xyz = xyz * [-1, -1, 1] # Back to NIFTI
+        os.remove(temp_file)
+        return xyz
+
+    def apply_to_xyz(self, xyz, convention='DICOM'):
+        '''
+        Parameters
+        ----------
+        xyz : Nx3 array
+        convention : 'DICOM' | 'NIFTI'
+        '''
+        return self._apply_transform_to_xyz(xyz, convention=convention, transform='forward')
+
+    def apply_inverse_to_xyz(self, xyz, convention='DICOM'):
+        '''
+        Parameters
+        ----------
+        xyz : Nx3 array
+        convention : 'DICOM' | 'NIFTI'
+        '''
+        return self._apply_transform_to_xyz(xyz, convention=convention, transform='inverse')
+
+
+def align_anat(base_file, in_file, out_file, strip=None, N4=None, init_shift=None, init_rotate=None, 
+    method=None, cost=None, n_params=None, interp=None, max_rotate=None, max_shift=None, 
+    emask=None, save_weight=None):
+    def parse_cost(output):
+        pattern = re.compile(r'\+\+ allcost output: final fine #0')
+        k = 0
+        while k < len(output):
+            match = pattern.match(output[k])
+            k += 1
+            if match:
+                cost = {}
+                while True:
+                    match = re.search('(\S+)\s+= (\S+)', output[k])
+                    k += 1
+                    if match:
+                        cost[match.group(1)] = float(match.group(2))
+                    else:
+                        break
+                return cost
     if method is None:
         method = '3dallineate'
     else:
@@ -983,42 +1598,99 @@ def align_anat(base_file, in_file, out_file, strip_base=True, strip_in=True, met
         n_params = 'shift_rotate'
     if interp is None:
         interp = 'wsinc5'
+    init_shift_cmd = ''
+    if init_shift is None:
+        if init_rotate is None:
+            init_shift_cmd = '-cmass'
+    if max_rotate is None:
+        max_rotate = 90
     temp_dir = utils.temp_folder()
     prefix, ext = afni.split_out_file(out_file)
     outputs = {
         'out_file': f"{prefix}{ext}",
         'xform_file': f"{prefix}.aff12.1D",
-        # 'cost': None,
+        'cost': None,
     }
+    if save_weight is not None:
+        outputs['weight_file'] = save_weight if isinstance(save_weight, six.string_types) else f"{prefix}.autoweight{ext}"
     pc = utils.PooledCaller()
-    if strip_base:
+    # Strip skull
+    if strip is None:
+        strip = True
+    if isinstance(strip, (str, bool)):
+        strip = [strip]
+    if not set(strip).isdisjoint({True, 'both', 'base', 'template'}):
         pc.run(skullstrip, base_file, f"{temp_dir}/base_ns.nii")
     else:
         pc.run(f"3dcopy {base_file} {temp_dir}/base_ns.nii")
-    if strip_in:
+    if not set(strip).isdisjoint({True, 'both', 'source', 'src', 'input', 'in'}):
         pc.run(skullstrip, in_file, f"{temp_dir}/in_ns.nii")
     else:
         pc.run(f"3dcopy {in_file} {temp_dir}/in_ns.nii")
     pc.wait()
+    # Correct bias field using N4 method in ANTs
+    # This may potentially enhance the performance of some cost functions.
+    # Consider trying 6 dof rigid body transform instead of 12 dof affine.
+    if N4 is None:
+        N4 = False
+    if N4 and shutil.which('N4BiasFieldCorrection') is None:
+        raise ValueError('>> ANTs is not (correctly) installed. So cannot use N4BiasFieldCorrection. Set N4=None.')
+    if isinstance(N4, (str, bool)):
+        N4 = [N4]
+    if not set(N4).isdisjoint({True, 'both', 'base', 'template'}):
+        pc.run(f"N4BiasFieldCorrection -d 3 -i {temp_dir}/base_ns.nii -s 2 -o \
+            '[{temp_dir}/base_ns.nii,{temp_dir}/base_bias.nii]'")
+    if not set(N4).isdisjoint({True, 'source', 'input', 'in'}):
+        pc.run(f"N4BiasFieldCorrection -d 3 -i {temp_dir}/in_ns.nii -s 2 -o \
+            '[{temp_dir}/in_ns.nii,{temp_dir}/in_bias.nii]'")
+    pc.wait()
+    # Apply initial (manual) alignment and extract the parameters
+    transforms = []
+    if init_rotate is not None:
+        init_mat = nudge_cmd2mat(init_rotate, f"{temp_dir}/in_ns.nii")
+        init_xform = f"{temp_dir}/init.aff12.1D"
+        io.write_affine(init_xform, init_mat)
+        apply_transforms(init_xform, f"{temp_dir}/base_ns.nii",
+            f"{temp_dir}/in_ns.nii", f"{temp_dir}/in_ns.nii")
+        transforms.insert(0, init_xform)
+    # Estimate best alignment parameters
     if method == '3dallineate':
-        utils.run(f"3dAllineate -final {interp} -cost {cost} -warp {n_params} -maxrot 90 \
+        res = utils.run(f"3dAllineate -final {interp} -cost {cost} -allcost -warp {n_params} \
+            {init_shift_cmd} \
+            -maxrot {max_rotate} {'' if max_shift is None else f'-maxshf {max_shift}'} \
             -base {temp_dir}/base_ns.nii -input {temp_dir}/in_ns.nii \
             -autoweight -source_automask+2 -twobest 11 -fineblur 1 \
-            -1Dmatrix_save {outputs['xform_file']} \
+            {f'-emask {emask}' if emask is not None else ''} \
+            {f'-wtprefix {0}'.format(outputs['weight_file']) if save_weight is not None else ''} \
+            -1Dmatrix_save {temp_dir}/in2base.aff12.1D \
             -prefix {temp_dir}/out_ns.nii -overwrite")
+        transforms.insert(0, f"{temp_dir}/in2base.aff12.1D")
+        outputs['cost'] = parse_cost(res['output'])
     elif method == 'align_epi_anat':
         pass
-    if strip_in:
-        apply_transforms(outputs['xform_file'], base_file, in_file, outputs['out_file'], interp=interp)
-    else:
-        utils.run(f"3dcopy {temp_dir}/out_ns.nii {outputs['out_file']} -overwrite")
+    # Apply all transforms at once
+    apply_transforms(transforms, base_file, in_file, outputs['out_file'], interp=interp, save_xform=outputs['xform_file'])
 
     shutil.rmtree(temp_dir)
     all_finished(outputs)
     return outputs
 
 
-def align_anat2epi(anat_file, epi_file, out_file, init_oblique=None, init_epi_rotate=None, init_anat_rotate=None):
+def align_S2E(base_file, suma_dir, out_file=None, **kwargs):
+    surf_vol = afni.get_surf_vol(suma_dir)
+    if out_file is None:
+        out_dir, prefix, ext = afni.split_out_file(base_file, split_path=True, trailing_slash=True)
+        out_file = f"{out_dir}SurfVol_Alnd_Exp{ext}"
+    out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True, trailing_slash=True)
+    outputs = align_anat(base_file, surf_vol, out_file)
+    outputs['script_file'] = f"{out_dir}run_suma"
+    spec_file = path.relpath(afni.get_suma_spec(suma_dir)['both'], out_dir)
+    create_suma_script(spec_file, path.split(out_file)[1], outputs['script_file'])
+    all_finished(outputs)
+    return outputs
+
+
+def align_anat2epi(anat_file, epi_file, out_file, base_file=None, init_oblique=None, init_epi_rotate=None, init_anat_rotate=None):
     '''
     Different init methods are mutual exclusive (i.e., at most one init method could be used at a time).
     '''
@@ -1069,7 +1741,9 @@ def align_anat2epi(anat_file, epi_file, out_file, init_oblique=None, init_epi_ro
         transforms.append(f"{temp_dir}/anat_init_al_mat.aff12.1D")
     else:
         transforms.insert(0, f"{temp_dir}/anat_init_al_mat.aff12.1D")
-    apply_transforms(transforms, f"{temp_dir}/anat_init.nii", anat_file, \
+    if base_file is None:
+        base_file = f"{temp_dir}/anat_init.nii"
+    apply_transforms(transforms, base_file, anat_file, \
         out_file=outputs['out_file'], save_xform=outputs['xform_file'])
 
     shutil.rmtree(temp_dir)
@@ -1197,6 +1871,10 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
         outputs['n_censored'] = None
         censors = []
     default_ext = '.1D' if ext == '.1D' else '+orig.HEAD'
+    # Check input/output extension compatibility
+    input_ext = path.splitext(in_files[0])[1]
+    if input_ext != ext:
+        raise ValueError(f'Input extension "{input_ext}" is incompatible with output extension "{ext}"')
     # Pick runs
     if pick_runs is None:
         pick_runs = list(range(len(in_files)))
@@ -1330,12 +2008,12 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
     return outputs
 
 
-def copy_dset(src, dst):
-    prefix, ext = afni.split_out_file(src)
+def copy_dset(in_file, out_file):
+    prefix, ext = afni.split_out_file(in_file)
     if ext == '.1D':
-        shutil.copy(src, dst)
+        shutil.copy(in_file, out_file)
     else:
-        utils.run(f"3dcopy {prefix}{ext} {dst} -overwrite")
+        utils.run(f"3dcopy {prefix}{ext} {out_file} -overwrite")
 
 
 def align_center(base_file, in_file, out_file):
@@ -1361,6 +2039,10 @@ def align_center(base_file, in_file, out_file):
 
     all_finished(outputs)
     return outputs
+
+
+
+
 
 
 

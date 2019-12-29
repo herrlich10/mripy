@@ -213,7 +213,7 @@ class PooledCaller(object):
         self._fulfilled = {} # Fulfilled dependencies across waits (a faster API compared with self._log)
         self.res_queue = multiprocessing.Queue() # Queue for return values of executed python callables
  
-    def run(self, cmd, *args, _depends=None, _dispatch=False, _error_pattern=None, _suppress_warning=False, **kwargs):
+    def run(self, cmd, *args, _depends=None, _dispatch=False, _error_pattern=None, _suppress_warning=False, _block=False, **kwargs):
         '''Asynchronously run command or callable (queued execution, return immediately).
         
         See subprocess.Popen() for more information about the arguments.
@@ -245,6 +245,9 @@ class PooledCaller(object):
         _dispatch : bool
             Dispatch the job immediately, which will run in the background without blocking.
         _error_pattern : str
+        _suppress_warning : bool
+        _block : bool
+            if True, call wait() internally and block.
 
         Returns
         -------
@@ -257,7 +260,13 @@ class PooledCaller(object):
         self._n_cmds += 1 # Accumulate by each call to run(), and reset after wait()
         if _dispatch:
             self.dispatch()
+        if _block:
+            self.wait()
         return _uuid
+
+    def run1(self, cmd, *args, _error_pattern=None, _suppress_warning=False, **kwargs):
+        self.run(cmd, *args, _error_pattern=_error_pattern, _suppress_warning=_suppress_warning, **kwargs)
+        return self.wait()
 
     def _callable_wrapper(self, idx, cmd, *args, **kwargs):
         out = TeeOut(tee=(self.verbose > 1))
@@ -326,7 +335,7 @@ class PooledCaller(object):
                 self._pid2job[p.pid] = job
                 self._log.append(job)
             else: # Re-queue the job whose dependencies are not fully fulfilled to the END of the queue
-                self.cmd_queue.append((idx, cmd, args, kwargs, _uuid, _depends, _error_pattern))
+                self.cmd_queue.append((idx, cmd, args, kwargs, _uuid, _depends, _error_pattern, _suppress_warning))
 
     def _async_get_res(self, res_list):
         try:

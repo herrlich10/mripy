@@ -17,6 +17,22 @@ from .paraproc import cmd_for_exec, cmd_for_disp, run
 from .paraproc import PooledCaller, SharedMemoryArray
 
 
+package_dir = path.abspath(path.dirname(__file__))
+
+
+def has_ants():
+    pass
+
+
+def has_N4():
+    pass
+
+
+def has_hcp_retino_docker():
+    pass
+
+
+
 # Command line syntactic sugar
 def expand_index_list(index_list, format=None):
     '''Expand a list of indices like: 1 3-5 7:10:2 8..10(2)
@@ -146,9 +162,9 @@ def fname_with_ext(fname, ext):
             return fname[:len(fname)-k] + ext
 
 
-def exists(fname):
+def exists(fname, force_redo=False):
     '''Lazy evaluation the body only if fname not already exists.'''
-    if not path.exists(fname):
+    if not path.exists(fname) or force_redo:
         return False
     else:
         print('>> Reuse existing "{0}"'.format(fname))

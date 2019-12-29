@@ -1,14 +1,18 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import subprocess
+import subprocess, os
 import numpy as np
 from collections import OrderedDict
-from . import six, afni, io
+from . import six, afni, io, utils
 
 
-def afni_costs(base_file, in_file):
-    cmd = '3dAllineate -base {0} -input {1} -allcostX'.format(base_file, in_file)
+def afni_costs(base_file, in_file, mask=None):
+    if mask is not None:
+        emask = utils.temp_prefix(suffix='.nii')
+        utils.run(f"3dcalc -a {mask} -expr '1-step(a)' -prefix {emask} -overwrite")
+    emask_cmd = f'-emask {emask}' if mask is not None else ''
+    cmd = f"3dAllineate -base {base_file} -input {in_file} -allcostX {emask_cmd}"
     lines = afni.check_output(cmd, pattern=r'^\s+\S+\s+=\s+\S+')
     costs = OrderedDict()
     for line in lines:
@@ -19,6 +23,8 @@ def afni_costs(base_file, in_file):
         costs[name].append(float(value))
     if np.all(np.array([len(v) for k, v in costs.items()]) == 1):
         costs = OrderedDict((k, v[0]) for k, v in costs.items())
+    if mask is not None:
+        os.remove(emask)
     return costs
 
 

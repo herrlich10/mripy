@@ -6,7 +6,7 @@ from os import path
 from itertools import chain
 from scipy import spatial
 import numpy as np
-from . import six, afni, io, utils
+from . import six, afni, io, utils, _with_pylab
 
 
 def map_sequence(seq1, seq2):
@@ -28,7 +28,12 @@ def map_sequence(seq1, seq2):
     return mapper
 
 
-def quadruple_mesh(verts, faces, power=1, values=[]):
+def quadruple_mesh(verts, faces, power=1, mask=None, values=[]):
+    '''
+    A face will be divided if any of its three nodes are within the mask.
+    '''
+    if mask is not None:
+        mask = set(mask)
     for _ in range(power):
         nv = [v for v in verts]
         nv_parent = {}
@@ -39,13 +44,15 @@ def quadruple_mesh(verts, faces, power=1, values=[]):
                 nv.append((verts[n1]+verts[n2])/2)
             return n_idx
         for f in faces:
-            nv0 = get_new_vert(f[1], f[2])
-            nv1 = get_new_vert(f[2], f[0])
-            nv2 = get_new_vert(f[0], f[1])
-            # nf.extend([(f[0], nv1, nv2), (nv1, f[2], nv0), (nv2, nv0, f[1]), (nv2, nv1, nv0)])
-            # The triangle should always list the vertices in a counter-clockwise direction 
-            # with respect to an outward pointing surface normal vector [Noah Benson]
-            nf.extend([(f[0], nv2, nv1), (nv2, f[1], nv0), (nv1, nv0, f[2]), (nv0, nv1, nv2)])
+            if mask is None or set(f).isdisjoint(mask):
+                nf.append(f)
+            else:
+                nv0 = get_new_vert(f[1], f[2])
+                nv1 = get_new_vert(f[2], f[0])
+                nv2 = get_new_vert(f[0], f[1])
+                # The triangle should always list the vertices in a counter-clockwise direction 
+                # with respect to an outward pointing surface normal vector [Noah Benson]
+                nf.extend([(f[0], nv2, nv1), (nv2, f[1], nv0), (nv1, nv0, f[2]), (nv0, nv1, nv2)])
         verts = nv
         faces = nf
     return np.array(verts), np.array(faces)
@@ -272,6 +279,46 @@ def create_lamina_mesh(fname, inner, outer, alpha, method='equivolume'):
     io.write_surf_mesh(fname, verts, faces)
 
 
+def transform_mesh(transform, in_file, out_file):
+    '''
+    Parameters
+    ----------
+    transform : mripy.preprocess.Transform object
+    in_file, out_file : surface mesh file name (*.gii or *.asc)
+    '''
+    verts, faces = io.read_surf_mesh(in_file)
+    verts = transform.apply_to_xyz(verts, convention='NIFTI')
+    io.write_surf_mesh(out_file, verts, faces)
+
+
+def transform_suma(transform, suma_dir, out_dir=None):
+    '''
+    BUG: Only part of the most used surfaces and volumes are transformed.
+    '''
+    if out_dir is None:
+        out_dir = suma_dir + '.al'
+    pc = utils.PooledCaller()
+    ext = afni.get_surf_type(suma_dir)
+    # Copy SUMA files
+    print('>> Copy SUMA dir...')
+    shutil.copytree(suma_dir, out_dir)
+    # Transform anatomical surface meshes
+    for surf in ['pial', 'smoothwm', 'white']:
+        for hemi in ['lh', 'rh']:
+            surf_file = f"{out_dir}/{hemi}.{surf}{ext}"
+            if path.exists(surf_file):
+                pc.run(transform_mesh, transform, surf_file, surf_file)
+    # Transform useful volumes
+    surf_vol = afni.get_surf_vol(out_dir)
+    pc.run(transform.apply, surf_vol, surf_vol)
+    # Transform benson14 volumes if exists
+    for dset in ['varea', 'eccen', 'angle', 'sigma']:
+        f = f"{out_dir}/benson14_{dset}.nii.gz"
+        if path.exists(f):
+            pc.run(transform.apply, f, f, interp='NearestNeighbor' if dset=='varea' else None)
+    pc.wait()
+
+
 def dset2roi(f_dset, f_roi=None, colors=None):
     '''
     ROI number starts from 1 (nodes with data==0 are ignored).
@@ -289,14 +336,43 @@ def dset2roi(f_dset, f_roi=None, colors=None):
             fmt=['%d', '%d', '%.6f', '%.6f', '%.6f'])
 
 
+def surface_calc(expr=None, out_file=None, **kwargs):
+    variables = {}
+    for k, (var, fname) in enumerate(kwargs.items()):
+        nodes, values = io.read_surf_data(fname)
+        variables[var] = (nodes, values)
+        if k == 0:
+            shared_nodes = set(nodes)
+        else:
+            shared_nodes = shared_nodes.intersection(nodes)
+    shared_nodes = np.array(sorted(shared_nodes)) # `sorted` is required
+    for var, (nodes, values) in variables.items():
+        shared = np.in1d(nodes, shared_nodes)
+        # A test for surface dataset compatibility (duck typing)
+        # TODO: There could be more direct check by looking at the header of the dataset
+        assert(np.all(nodes[shared]==shared_nodes)) 
+        variables[var] = values[shared]
+    v = _with_pylab.pylab_eval(expr, **variables)
+    io.write_surf_data(out_file, shared_nodes, v)
+
+
 class Surface(object):
     def __init__(self, suma_dir, surf_vol=None):
         self.suma_dir = suma_dir
         self.surf_vol = 'SurfVol_Alnd_Exp.nii' if surf_vol is None else surf_vol
+        if not path.exists(self.surf_vol):
+            raise ValueError(f'>> Cannot find "{self.surf_vol}" on current directory\n"{os.getcwd()}"')
         self.specs = afni.get_suma_spec(self.suma_dir)
         self.subj = afni.get_suma_subj(self.suma_dir)
         self.surfs = ['pial', 'smoothwm', 'inflated', 'sphere.reg']
         self.hemis = ['lh', 'rh']
+        self.surf_ext = afni.get_surf_type(self.suma_dir)
+        self.info = {hemi: io.read_surf_info(f"{self.suma_dir}/{hemi}.inflated{self.surf_ext}") for hemi in self.hemis}
+
+    def __repr__(self):
+        n_verts = f'{self.info["lh"]["n_verts"]}/{self.info["rh"]["n_verts"]} verts'
+        n_faces = f'{self.info["lh"]["n_faces"]}/{self.info["rh"]["n_faces"]} faces'
+        return f'<Surface  | {n_verts}, {n_faces}, suma_dir="{self.suma_dir}", \n surf_vol="{self.surf_vol}", surf_ext="{self.surf_ext}">'
 
     def _get_surf2exp_transform(self, exp_anat):
         pass
@@ -310,15 +386,22 @@ class Surface(object):
     def to_1D_dset(self, prefix, node_values, hemi):
         np.savetxt('{0}.{1}.1D.dset'.format(prefix, hemi), np.c_[np.arange(len(node_values)), node_values])
 
-
-    def vol2surf(self, in_file, out_file, func='median', depth_range=[0,1], mask_file=None, truncate=False):
+    def vol2surf(self, in_file, out_file, func='median', depth_range=[0,1], mask_file=None, truncate=True):
         '''
         Parameters
         ----------
-        in_file : str, "beta.nii"
-        out_file : str, "beta.niml.dset" will generate ["lh.beta.niml.dset", "rh.beta.niml.dset"]
+        in_file : str, 
+            E.g., "beta.nii" or "stats.loc_REML.nii'[L-R#0_Tstat]'".
+        out_file : str
+            "beta.niml.dset" will automatically generate ["lh.beta.niml.dset", "rh.beta.niml.dset"].
         func : str
-            ave, median, mask, midpoint, etc.
+            ave, median, max, midpoint, etc.
+        mask_file : str
+            Volume mask file.
+        truncate : bool
+            If True, vertices whose value is zero will be omitted in the output surface dataset.
+            `surface_calc()` will handle such (partial) surface dataset correctly.
+            But if you need to use `3dcalc`, set truncate=False and output all vertices.
 
         About "-f_index nodes"
         ----------------------
@@ -350,7 +433,7 @@ class Surface(object):
                 -out_niml {fo_niml} {out_1D_cmd} -overwrite", 
                 _error_pattern='error', _suppress_warning=True)
         pc.wait()
-
+        return pc._log
 
     def surf2vol(self, base_file, in_files, out_file, func='median', combine='max(l,r)', depth_range=[0,1], mask_file=None):
         '''
@@ -363,6 +446,8 @@ class Surface(object):
             ave, median, mask2, count, etc.
         combine : str
             l+r, max(l,r), consistent, etc.
+        mask_file : str
+            Volume mask file.
 
         About "-f_index nodes"
         ----------------------
@@ -371,7 +456,7 @@ class Surface(object):
             weighted by the number of points occupying a voxel (-f_index nodes), 
             not just the number of node pair segments (-f_index voxels).
         '''
-        in_files = afni.infer_surf_dset_names(in_files, hemis=self.hemis)
+        in_files = afni.infer_surf_dset_variants(in_files, hemis=self.hemis)
         mask_cmd = f"-cmask {mask_file}" if mask_file is not None else ''
         temp_dir = utils.temp_folder()
         pc = utils.PooledCaller()
@@ -393,15 +478,28 @@ class Surface(object):
         pc.wait()
         if len(in_files) > 1:
             if combine == 'consistent':
-                utils.run(f"3dcalc -l {temp_dir}/lh.nii -r {temp_dir}/rh.nii \
+                pc.run1(f"3dcalc -l {temp_dir}/lh.nii -r {temp_dir}/rh.nii \
                     -expr 'notzero(l)*iszero(r)*l+iszero(l)*notzero(r)*r+notzero(l)*notzero(r)*equals(l,r)*l' \
                     -prefix {out_file} -overwrite")
             else:
-                utils.run(f"3dcalc -l {temp_dir}/lh.nii -r {temp_dir}/rh.nii \
+                pc.run1(f"3dcalc -l {temp_dir}/lh.nii -r {temp_dir}/rh.nii \
                     -expr '{combine}' -prefix {out_file} -overwrite")
         else:
-            utils.run(f"3dcopy {temp_dir}/{hemi}.nii {out_file} -overwrite")
+            pc.run1(f"3dcopy {temp_dir}/{hemi}.nii {out_file} -overwrite")
         shutil.rmtree(temp_dir)
+        return pc._log
+
+    def mask_ribbon(self, in_file, out_file, depth_file=None):
+        temp_file = utils.temp_prefix(suffix='.niml.dset')
+        pc = utils.PooledCaller()
+        _log = self.vol2surf(in_file, temp_file, func='max', depth_range=[0.2, 0.8])
+        _log += self.surf2vol(in_file, temp_file, out_file, func='mode') # Round at border
+        for hemi in self.hemis:
+            os.remove(f"{hemi}.{temp_file}")
+        if depth_file is not None:
+            pc.run1(f"3dcalc -a {out_file} -d {depth_file} -expr 'a*step(d)*step(1-d)' \
+                -prefix {out_file} -overwrite")
+        return _log + pc._log
 
 
 if __name__ == '__main__':

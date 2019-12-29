@@ -26,6 +26,95 @@ class Savable(object):
         return cls.from_dict(dio.load(fname))
 
 
+class Attributes(object):
+    def __init__(self, shape):
+        super().__setattr__('attributes', {})
+        self.shape = shape
+
+    shape = property(lambda self: self._shape, lambda self, x: setattr(self, '_shape', np.array(x)))
+
+    def add(self, name, value, axis):
+        assert(len(value) == self.shape[axis])
+        self.attributes[name] = {'axis': axis, 'value': np.array(value)}
+
+    def drop(self, name):
+        self.attributes.pop(name)
+
+    def drop_all_with_axis(self, axis):
+        axes = axis if np.iterable(axis) else [axis]
+        for axis in axes:
+            for name in self.names_with_axis(axis):
+                self.drop(name)
+
+    def __getattr__(self, name):
+        return self.attributes[name]['value']
+
+    def __setattr__(self, name, value):
+        if name in self.attributes:
+            assert(len(value) == self.shape[self.attributes[name]['axis']])
+            self.attributes[name]['value'] = np.array(value)
+        else:
+            # If the attribute is not added before, it will become a instance attribute
+            super().__setattr__(name, value)
+
+    def names_with_axis(self, axis):
+        return [name for name, attr in self.attributes.items() if attr['axis']==axis]
+
+    def __repr__(self):
+        names = '\n'.join([f" axis={axis} ({self.shape[axis]}) | {', '.join(self.names_with_axis(axis))}" for axis in range(len(self.shape))])
+        return f"<Attributes  | shape = {self.shape}\n" + names
+
+    def __copy__(self):
+        inst = type(self)(self.shape)
+        inst.attributes = copy.deepcopy(self.attributes)
+        return inst
+
+    def pick(self, index, axis):
+        inst = copy.copy(self)
+        if np.iterable(axis):
+            indices, axes = index, axis
+        else:
+            indices, axes = [index], [axis]
+        for index, axis in zip(indices, axes):
+            # Update shape first via a virtual attribute (in case there is not attribute at all)
+            inst.shape[axis] = len(np.arange(inst.shape[axis])[index])
+            # Update attributes belonging to the axis
+            for name in inst.names_with_axis(axis):
+                attr = inst.attributes[name]
+                attr['value'] = attr['value'][index]
+        return inst
+
+    @classmethod
+    def concatinate(cls, attributes_list, axis):
+        # Concat shape along axis, and check shape compatibility along other axis
+        inst = attributes_list[0]
+        self = cls(inst.shape)
+        self.shape[axis] = np.sum([attributes.shape[axis] for attributes in attributes_list])
+        other_axes = np.r_[0:axis, axis+1:len(self.shape)]
+        for attributes in attributes_list[1:]:
+            assert(np.all(attributes.shape[other_axes] == self.shape[other_axes]))
+        # Concat attributes along axis, and check attributes compatibility (identity) along other axis
+        for name, attr in inst.attributes.items():
+            if attr['axis'] == axis:
+                value = np.concatenate([attributes.attributes[name]['value'] for attributes in attributes_list])
+            else:
+                value = attr['value']
+                for attributes in attributes_list[1:]:
+                    assert(np.all(attributes.attributes[name]['value'] == value))
+            self.add(name, value, axis)
+        return self
+                
+    def to_dict(self):
+        return dict(attributes=self.attributes, shape=self.shape)
+
+    @classmethod
+    def from_dict(cls, d):
+        self = cls(None)
+        for k, v in d.items():
+            setattr(self, k, v)
+        return self
+
+
 class Raw(Savable, object):
     def __init__(self, fname, mask=None, TR=None):
         if fname is None:
@@ -104,6 +193,7 @@ class Raw(Savable, object):
 
 def _copy(self):
     '''Copy all object attributes other than `data`, which is simply referred to.'''
+    # TODO: .info and events etc. should be deep copied
     data = self.data
     del self.data
     inst = copy.copy(self)
@@ -112,10 +202,10 @@ def _copy(self):
 
 
 class RawCache(Savable, object):
-    def __init__(self, fnames, mask, TR=None, cache_file=None):
+    def __init__(self, fnames, mask, TR=None, cache_file=None, force_redo=False):
         if fnames is None:
             return # Skip __init__(), create an empty RawCache object, and manually initialize it later.
-        if cache_file is None or not utils.exists(cache_file):
+        if cache_file is None or not utils.exists(cache_file, force_redo=force_redo):
             self.mask = mask if isinstance(mask, io.Mask) else io.Mask(mask)
             self.raws = [Raw(fname, mask=self.mask, TR=TR) for fname in fnames]
             if cache_file is not None:
@@ -193,20 +283,24 @@ def read_events(event_files):
     t = []
     e = []
     event_id = OrderedDict()
-    for eid, (event, event_file) in enumerate(event_files.items()):
+    for k, (event, event_file) in enumerate(event_files.items()):
+        if isinstance(event_file, str):
+            eid = k + 1
+        else:
+            event_file, eid = event_file
         with open(event_file, 'r') as fi:
             for rid, line in enumerate(fi):
                 line = line.strip()
                 if not line:
                     continue
-                if eid == 0:
+                if k == 0:
                     t.append([])
                     e.append([])
                 if not line.startswith('*'):
                     t_run = np.float_(line.split())
                     t[rid].extend(t_run)
-                    e[rid].extend(np.ones_like(t_run)*(eid+1))
-        event_id[event] = eid+1
+                    e[rid].extend(np.ones_like(t_run)*(eid))
+        event_id[event] = eid
     events = []
     for rid in range(len(t)):
         events_run = np.c_[t[rid], np.zeros_like(t[rid]), e[rid]]
@@ -228,7 +322,7 @@ def events_from_dataframe(df, run, time, conditions, duration=None, event_id=Non
 
 
 def _default_event_id(events):
-    return {f"{id:g}": id for id in np.unique(events[:,-1])}
+    return {f"{id:g}": id for id in np.unique(events[:,2])}
 
 
 def create_base_corr_func(times, baseline=None, method=None):
@@ -254,7 +348,14 @@ def create_base_corr_func(times, baseline=None, method=None):
         tmax = times[-1] if baseline[1] is None else baseline[1]
         times = np.array(times)
         time_sel = (tmin<=times) & (times<=tmax)
-        return lambda x: x - method(x[...,time_sel], axis=-1, keepdims=True)
+        if method in [np.nanmean, np.nanmedian]:
+            def base_corr(x):
+                with warnings.catch_warnings():
+                    warnings.simplefilter('ignore', category=RuntimeWarning)
+                    return x - method(x[...,time_sel], axis=-1, keepdims=True)
+            return base_corr
+        else:
+            return lambda x: x - method(x[...,time_sel], axis=-1, keepdims=True)
 
 
 class Epochs(Savable, object):
@@ -285,6 +386,7 @@ class Epochs(Savable, object):
         self.data = np.zeros([events.shape[0], raw.n_features, len(self.times)], dtype=raw.data.dtype)
         for k, t in enumerate(events[:,0]):
             self.data[k] = base_corr(f(np.arange(t+tmin, t+tmax+dt/2, dt)))
+        self.attr = Attributes(shape=self.shape)
 
     shape = property(lambda self: self.data.shape)
     n_events = property(lambda self: self.data.shape[0])
@@ -316,14 +418,15 @@ class Epochs(Savable, object):
         if event_id is None:
             self.event_id = {'Event': 0} if events is None else _default_event_id(self.events)
         else:
-            assert(np.all(np.in1d(self.events[:,-1], list(event_id.values()))))
+            assert(np.all(np.in1d(self.events[:,2], list(event_id.values()))))
             self.event_id = event_id
         base_corr = create_base_corr_func(self.times, baseline=baseline)
         self.data = base_corr(self.data)
+        self.attr = Attributes(shape=self.shape)
         return self
 
     def __repr__(self):
-        event_str = '\n '.join(f"'{ev}': {np.sum(self.events[:,-1]==id)}" for ev, id in self.event_id.items())
+        event_str = '\n '.join(f"'{ev}': {np.sum(self.events[:,2]==id)}" for ev, id in self.event_id.items())
         return f"<Epochs  | {self.n_events:4d} events, {self.n_features} {self.info['feature_name']}s, {self.times[0]:.3f} - {self.times[-1]:.3f} sec, baseline {self.info['baseline']}, hamm = {self.info['hamm']},\n {event_str}>"
   
     # https://github.com/mne-tools/mne-python/blob/master/mne/utils/mixin.py
@@ -332,6 +435,12 @@ class Epochs(Savable, object):
             return self.pick(*item)
         else:
             return self.pick(event=item)
+
+    def add_event_attr(self, name, value):
+        self.attr.add(name, value, axis=0)
+
+    def add_feature_attr(self, name, value):
+        self.attr.add(name, value, axis=1)
 
     def pick(self, event=None, feature=None, time=None):
         inst = self.copy()
@@ -344,7 +453,7 @@ class Epochs(Savable, object):
         else:
             sel_event = event
         inst.events = inst.events[sel_event]
-        inst.event_id = {ev: id for ev, id in inst.event_id.items() if id in inst.events[:,-1]}
+        inst.event_id = {ev: id for ev, id in inst.event_id.items() if id in inst.events[:,2]}
         # Select feature
         if feature is None:
             sel_feature = slice(None)
@@ -363,16 +472,20 @@ class Epochs(Savable, object):
         # inst.info['sfreq'] = ?
         # Make 3D selection
         inst.data = inst.data[sel_event][:,sel_feature][...,sel_time]
+        inst.attr = inst.attr.pick([sel_event, sel_feature, sel_time], axis=[0, 1, 2])
         return inst
 
     def copy(self):
-        return _copy(self)
+        inst = _copy(self)
+        inst.attr = copy.copy(self.attr)
+        return inst
 
     def drop_events(self, ids):
         inst = self.copy()
         inst.data = np.delete(inst.data, ids, axis=0)
         inst.events = np.delete(inst.events, ids, axis=0)
-        inst.event_id = {ev: id for ev, id in inst.event_id.items() if id in inst.events[:,-1]} # TODO: Need refactor
+        inst.event_id = {ev: id for ev, id in inst.event_id.items() if id in inst.events[:,2]} # TODO: Need refactor
+        inst.attr.pick(np.delete(np.arange(self.n_events), ids), axis=0)
         return inst
 
     def _partial_match_event(self, keys):
@@ -382,7 +495,7 @@ class Epochs(Savable, object):
         for key in keys:
             key_set = set(key.split('/'))
             matched_id = [id for ev, id in self.event_id.items() if key_set.issubset(ev.split('/'))]
-            matched.append(np.atleast_2d(np.in1d(self.events[:,-1], matched_id)))
+            matched.append(np.atleast_2d(np.in1d(self.events[:,2], matched_id)))
         return np.any(np.vstack(matched), axis=0)
 
     def apply_baseline(self, baseline):
@@ -395,12 +508,15 @@ class Epochs(Savable, object):
     def aggregate(self, event=True, feature=False, time=False, method=np.nanmean, keepdims=np._globals._NoValue, return_index=False):
         axes = ((0,) if event else ()) + ((1,) if feature else ()) + ((2,) if time else ())
         values = method(self.data, axis=axes, keepdims=keepdims)
-        events = self.events[:,-1] if not event else None
+        events = self.events[:,2] if not event else None
         features = np.arange(self.n_features) if not feature else -1
         times = self.times if not time else np.mean(self.times)
         return (values, events, features, times) if return_index else values
 
     def average(self, feature=True, time=False, method=np.nanmean, error='bootstrap', ci=95, n_boot=1000, condition=None):
+        '''
+        Average data over event (and optionally feature and/or time) dimensions, and return an Evoked object.
+        '''
         x, _, _, times = self.aggregate(event=False, feature=feature, time=time, method=method, return_index=True)
         data = method(x, axis=0)
         nave = x.shape[0]
@@ -422,9 +538,25 @@ class Epochs(Savable, object):
     #         x, _, _, times = self.pick(event=slice(start, start+win_size)).aggregate(feature=True, time=time, method=method, return_index=True)
     #         data.append(x)
     #     evoked = Evoked2D(self.info, np.array(data), win_size, features, times)
-            
+    
+    def transform(self, feature_name, feature_values, transformer):
+        '''
+        Transform the data into a new Epochs object.
+        E.g., epochs.transform('depth', depth, tc.wcutter(depth, linspace(0, 1, 20), win_size=0.2, win_func='gaussian', exclude_outer=True))
+        '''
+        assert(len(feature_values)==self.n_features)
+        inst = self.copy()
+        inst.info['feature_name'] = feature_name
+        inst.info['feature_values'] = feature_values
+        inst.data = transform(inst.data, *transformer, axis=1)
+        # TODO: update inst.attr
+        return inst
 
-    def summary(self, event=False, feature=True, time=False, method=np.nanmean):
+
+    def summary(self, event=False, feature=True, time=False, method=np.nanmean, attributes=None):
+        '''
+        Summary data as a pandas DataFrame.
+        '''
         assert(self.info['conditions'] is not None)
         dfs = []
         for ev in self.event_id:
@@ -438,7 +570,11 @@ class Epochs(Savable, object):
             df['time'] = np.tile(times, np.prod(x.shape[:2]))
             df[self.info['value_name']] = x.ravel()
             dfs.append(pd.DataFrame(df))
-        return pd.concat(dfs, ignore_index=True)
+        df = pd.concat(dfs, ignore_index=True)
+        if attributes is not None:
+            for name, value in attributes.items():
+                df[name] = value
+        return df
 
     def plot(self, hue=None, style=None, row=None, col=None, hue_order=None, style_order=None, row_order=None, col_order=None,
         palette=None, dashes=None, figsize=None, bbox_to_anchor=None, subplots_kws=None, average_kws=None, **kwargs):
@@ -455,6 +591,8 @@ class Epochs(Savable, object):
         style_order = [None] if style is None else (conditions[style] if style_order is None else style_order)
         if palette is None:
             palette = plt.rcParams['axes.prop_cycle'].by_key()['color']
+        elif isinstance(palette, str):
+            palette = sns.color_palette(palette)
         if dashes is None:
             dashes = ['-', '--', ':', '-.']
         average_kws = dict(dict(), **({} if average_kws is None else average_kws))
@@ -466,7 +604,8 @@ class Epochs(Savable, object):
                     for sid, style_val in enumerate(style_order):
                         event = '/'.join(np.array([hue_val, style_val, row_val, col_val])[con_sel])
                         label = '/'.join([s for s in [hue_val, style_val] if s is not None])
-                        self[event].average(**average_kws).plot(color=palette[hid], ls=dashes[sid], 
+                        event_sel = self._partial_match_event(event)
+                        self[event_sel].average(**average_kws).plot(color=palette[hid], ls=dashes[sid], 
                             label=label, show_n='label' if label else 'info', info=show_info, **kwargs)
                         show_info = False
                         plt.axhline(0, color='gray', ls='--')
@@ -480,22 +619,87 @@ class Epochs(Savable, object):
         sns.despine()
 
     def to_dict(self):
-        return dict(info=self.info, data=self.data, events=self.events, event_id=self.event_id, times=self.times)
+        return dict(info=self.info, data=self.data, events=self.events, event_id=self.event_id, 
+            times=self.times, attr=self.attr.to_dict())
 
     @classmethod
     def from_dict(cls, d):
         self = cls(None, None)
         for k, v in d.items():
             setattr(self, k, v)
+        self.attr = Attributes.from_dict(self.attr)
         return self
 
 
-def concatinate_epochs(epochs_list):
-    epochs = epochs_list[0].copy()
-    epochs.data = np.concatenate([epochs.data for epochs in epochs_list], axis=0)
-    epochs.events = np.concatenate([epochs.events for epochs in epochs_list], axis=0)
-    epochs.event_id = {k: v for epochs in epochs_list for k, v in epochs.event_id.items()}
-    return epochs
+def concatinate_epochs(epochs_list, axis=0):
+    inst = epochs_list[0].copy()
+    inst.data = np.concatenate([epochs.data for epochs in epochs_list], axis=axis)
+    inst.attr = Attributes.concatinate([epochs.attr for epochs in epochs_list], axis=axis)
+    if axis == 0: # Concat events
+        inst.events = np.concatenate([epochs.events for epochs in epochs_list], axis=0)
+        inst.event_id = {k: v for epochs in epochs_list for k, v in epochs.event_id.items()}
+    elif axis == 1: # Concat voxels
+        assert(np.all([np.all(epochs.events == epochs_list[0].events) for epochs in epochs_list[1:]]))
+        assert(np.all([(epochs.event_id == epochs_list[0].event_id) for epochs in epochs_list[1:]]))
+    return inst
+
+
+def group_epochs(epochs_list):
+    inst = epochs_list[0].copy()
+    inst.data = np.concatenate([epochs[event].aggregate(event=True, feature=True, keepdims=True) 
+        for epochs in epochs_list for event in inst.event_id], axis=0)
+    inst.events = np.array(list(inst.event_id.values())*len(epochs_list))
+    inst.events = np.c_[np.zeros((len(inst.events),2)), inst.events]
+    inst.attr = Attributes(shape=inst.shape)
+    return inst
+
+
+# def transform(data, idx_gen, weight_gen=None, agg_func=None, axis=0):
+#     if agg_func is None:
+#         agg_func = np.nanmean if np.any(np.isnan(data)) else np.mean
+#     if weight_gen is None:
+#         ##### BUG!!!
+#         return np.concatenate([agg_func(data[idx,...], axis=axis, keepdims=True) for idx in idx_gen], axis=axis)
+#     else:
+#         return np.concatenate([agg_func(data[idx,...]*weight, axis=axis, keepdims=True) 
+#             for idx, weight in zip(idx_gen, weight_gen)], axis=axis)
+
+
+def cut(data, val, bins, **kwargs):
+    return transform(data, *cutter(val, bins), **kwargs)
+
+def cutter(val, bins):
+    idx_gen = ((bins[k]<val)&(val<=bins[k+1]) for k in range(len(bins)-1))
+    return idx_gen, None
+
+
+def qcut(data, val, q, **kwargs):
+    return transform(data, *qcutter(val, q), **kwargs)
+
+def qcutter(val, q):
+    bins = np.percentile(val, q)
+    idx_gen = ((bins[k]<val)&(val<=bins[k+1]) for k in range(len(bins)-1))
+    return idx_gen, None
+
+
+def wcut(data, val, v, win_size, win_func=None, exclude_outer=False, **kwargs):
+    return transform(data, *wcutter(val, v, win_size, win_func=win_func, exclude_outer=exclude_outer), **kwargs)
+
+def wcutter(val, v, win_size, win_func=None, exclude_outer=False):
+    r = win_size/2
+    if win_func == 'gaussian':
+        sigma = win_size/4
+        win_func = lambda c, x: np.exp(-(x-c)**2/sigma**2)
+    if exclude_outer:
+        bins = [[max(v[0], vv-r), min(v[-1], vv+r)] for vv in v]
+    else:
+        bins = [[vv-r, vv+r] for vv in v]
+    idx_gen = ((lower<val)&(val<=upper) for lower, upper in bins)
+    if win_func is not None:
+        weight_gen = (win_func(vv, val[(lower<val)&(val<=upper)]) for vv, (lower, upper) in zip(v, bins))
+    else:
+        weigth_gen = None
+    return idx_gen, weight_gen
 
 
 class Evoked(object):

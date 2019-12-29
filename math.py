@@ -65,5 +65,45 @@ def polyfit3d(x, y, z, f, deg, method=None):
     return c 
 
 
+def circular_mean(x, domain=None, weight=None, axis=None):
+    '''
+    Circular mean for values from arbitary circular domain (not necessarily angles).
+    '''
+    if domain is None:
+        domain = [0, 2*np.pi]
+    if weight is None:
+        weight = np.ones(x.shape)
+    # Mapping domain into [0, 2*pi]
+    y = (x - domain[0]) / (domain[-1] - domain[0]) * 2*np.pi
+    # Circular mean
+    mean_y = np.sum(np.exp(1j*y) * weight, axis=axis) / np.sum(weight, axis=axis)
+    mean_y = np.mod(np.angle(mean_y), 2*np.pi)
+    # Mapping domain back
+    mean_x = mean_y / (2*np.pi) * (domain[-1] - domain[0]) + domain[0]
+    return mean_x
+
+
+def circular_std(x, domain=None, weight=None, axis=None):
+    '''
+    Following scipy.stats.circstd()'s definition of circular standard deviation 
+    that in the limit of small angles returns the 'linear' standard deviation.
+    scipy.stats.circstd() doesn't support weight.
+    pycircstat.std() doesn't support domain.
+    astropy.stats.circvar() follows another definition.
+    '''
+    if domain is None:
+        domain = [0, 2*np.pi]
+    if weight is None:
+        weight = np.ones(x.shape)
+    # Mapping domain into [0, 2*pi]
+    y = (x - domain[0]) / (domain[-1] - domain[0]) * 2*np.pi
+    # Circular std
+    mean_y = np.sum(np.exp(1j*y) * weight, axis=axis) / np.sum(weight, axis=axis)
+    std_y = np.sqrt(-2*np.log(np.abs(mean_y)))
+    # Mapping domain back
+    std_x = std_y / (2*np.pi) * (domain[-1] - domain[0])
+    return std_x
+
+
 if __name__ == '__main__':
     pass
