@@ -153,7 +153,7 @@ class ChannelEncodingModel(object):
 
 
 class BayesianChannelModel(object):
-    def __init__(self, n_channels, basis_func, stimulus_domain, circular=False, stimulus_prior=None, use_gradient=True, use_pinv=True, use_multi=False):
+    def __init__(self, n_channels, basis_func, stimulus_domain, circular=False, stimulus_prior=None, global_search=False):
         '''
         After (van Bergen et al., 2015).
         '''
@@ -162,9 +162,7 @@ class BayesianChannelModel(object):
         self.stimulus_domain = stimulus_domain
         self.circular = circular
         self.stimulus_prior = 1 if stimulus_prior is None else stimulus_prior
-        self.use_gradient = use_gradient
-        self.use_pinv = use_pinv
-        self.use_multi = use_multi
+        self.global_search = global_search
 
     def fit(self, X, y):
         '''
@@ -189,7 +187,8 @@ class BayesianChannelModel(object):
         #    which could occur with randn W
         # Note that Gilles used `np.linalg.lstsq()` here, which should be numerically adept.
         W = b @ fs.T @ np.linalg.pinv(fs @ fs.T) # Weight, n_voxels * n_channels
-        self.W = W # Store params
+        # Store params
+        self.W = W
         # Step 2: Estimate tau, rho, sigma by ML optimization (gradient-based)
         z = b - W @ fs # n_voxels * n_trials
         # Initial params
@@ -198,27 +197,21 @@ class BayesianChannelModel(object):
         sigma0 = np.mean(np.std(fs, axis=1))
         params0 = np.r_[tau0, rho0, sigma0]
         bounds = np.c_[np.zeros(len(params0)), np.r_[tau0*5, 1, sigma0*5]]
-        # Or more powerful, optimize.minimize
-        if self.use_gradient:
-            # params = optimize.fmin_cg(self._negloglikelihood, params0, self._negloglikelihood_prime, args=(z, W))
-            # res = optimize.minimize(self._negloglikelihood, params0, args=(z, W), method='CG', jac=self._negloglikelihood_prime, bounds=bounds)
-            # Conjugate gradient algorithm, due to lack of support for bounds, requires multi-start to avoid/alleviate being trapped in local minima.
-            if self.use_multi:
-                def accept_test(f_new, x_new, f_old, x_old):
-                    Omega = self._calc_Omega(self.W, x_new[:-2], x_new[-2], x_new[-1])
-                    is_pos_semi_def = np.all(np.linalg.eigvals(Omega) > 0)
-                    return (f_new < f_old and f_new > 0 and is_pos_semi_def)
-                res = optimize.basinhopping(self._negloglikelihood, params0, accept_test=accept_test, 
-                    minimizer_kwargs=dict(args=(z, W), method='L-BFGS-B', jac=self._negloglikelihood_prime, bounds=bounds))
-            else:
-                res = optimize.minimize(self._negloglikelihood, params0, args=(z, W), method='L-BFGS-B', jac=self._negloglikelihood_prime, bounds=bounds)
+        # Conjugate gradient algorithm, due to lack of support for bounds, requires multi-start to avoid/alleviate being trapped in local minima.
+        if self.global_search:
+            def accept_test(f_new, x_new, f_old, x_old):
+                Omega = self._calc_Omega(self.W, x_new[:-2], x_new[-2], x_new[-1])
+                # is_pos_semi_def = np.all(np.linalg.eigvals(Omega) > 0)
+                # return (f_new < f_old and f_new > 0 and is_pos_semi_def)
+                is_singular = np.linalg.matrix_rank(Omega, hermitian=True) < Omega.shape[0]
+                return (f_new < f_old and f_new > 0 and not is_singular)
+            res = optimize.basinhopping(self._negloglikelihood, params0, accept_test=accept_test, 
+                minimizer_kwargs=dict(args=(z, W), method='L-BFGS-B', jac=self._negloglikelihood_prime, bounds=bounds))
         else:
-            # params = optimize.fmin_cg(self._negloglikelihood, params0, args=(z, W), gtol=1e-6)
-            res = optimize.minimize(self._negloglikelihood, params0, args=(z, W), method='L-BFGS-B', bounds=bounds)
+            res = optimize.minimize(self._negloglikelihood, params0, args=(z, W), method='L-BFGS-B', jac=self._negloglikelihood_prime, bounds=bounds)
         params = res.x
-        print(res)
-        pp = lambda params: np.r_[params[:3], params[-2], params[-1]]
-        print(pp(params0), '-->', pp(params))
+        print(f"cost={res.fun}, iter={res.nit}, func_eval={res.nfev}, success={res.success}, {res.message}")
+        print(np.r_[params0[0], params0[-2], params0[-1]], '-->', np.r_[params[0], params[-2], params[-1]])
         # Store params
         self.tau, self.rho, self.sigma = params[:-2], params[-2], params[-1]
         self.Omega = self._calc_Omega(self.W, self.tau, self.rho, self.sigma)
@@ -316,10 +309,7 @@ class BayesianChannelModel(object):
         z = b - W @ fs
         '''
         Omega = self._calc_Omega(W, tau, rho, sigma)
-        if self.use_pinv:
-            M = np.linalg.pinv(Omega) # Although (4x) slower than inv, pinv is preferred in the numerical world (=inv if invertible and well conditioned)
-        else:
-            M = np.linalg.inv(Omega) # This is indeed faster, and the result is usually of similar quality 
+        M = np.linalg.pinv(Omega) # Although (4x) slower than inv, pinv is preferred in the numerical world (=inv if invertible and well conditioned)
         n_voxels, n_trials = z.shape
         # For a single sample: -0.5 * (z.T @ M @ z + np.log(np.linalg.det(Omega)) + n_voxels*np.log(2*np.pi))
         # May also use (by Gilles): np.sum(stats.multivariate_normal(np.zeros(n_voxels), Omega).logpdf(z.T))
@@ -327,10 +317,7 @@ class BayesianChannelModel(object):
         return -0.5 * (np.trace(z.T @ M @ z) + n_trials*np.prod(np.linalg.slogdet(Omega)) + n_trials*n_voxels*np.log(2*np.pi))
         
     def _dL_dOmega(self, z, Omega, chain=False):
-        if self.use_pinv:
-            M = np.linalg.pinv(Omega) # Although (4x) slower than inv, pinv is preferred in the numerical world (=inv if invertible and well conditioned)
-        else:
-            M = np.linalg.inv(Omega) # This is indeed faster, and the result is usually of similar quality 
+        M = np.linalg.pinv(Omega) # Although (4x) slower than inv, pinv is preferred in the numerical world (=inv if invertible and well conditioned)
         n_voxels, n_trials = z.shape
         # deriv = 0.5 * (M.T @ np.outer(z, z) @ M.T - M.T)
         # For a single sample: deriv = 0.5 * (M @ np.outer(z, z) @ M - M) # M.T == M

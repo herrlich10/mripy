@@ -385,6 +385,16 @@ def get_TR(fname):
     return float(check_output(['3dinfo', '-TR', fname])[-2])
 
 
+def get_attribute(fname, name, type=None):
+    res = check_output(['3dAttribute', name, fname])[-2]
+    if type == 'int':
+        return np.int_(res[:-1].split())
+    elif type == 'float':
+        return np.float_(res[:-1].split())
+    else:
+        return res[:-1]
+
+
 def set_attribute(fname, name, value, type=None):
     values = np.atleast_1d(value)
     if type == 'str' or isinstance(value, str):
@@ -395,14 +405,20 @@ def set_attribute(fname, name, value, type=None):
         check_output(['3drefit', '-atrfloat', name, f"{' '.join([str(v) for v in values])}", fname])
 
 
-def get_attribute(fname, name, type=None):
-    res = check_output(['3dAttribute', name, fname])[-2]
+def get_nifti_field(fname, name, type=None):
+    res = check_output(['nifti_tool', '-disp_hdr', '-field', name, '-infiles', fname])[-2]
     if type == 'int':
-        return np.int_(res[:-1].split())
+        return np.int_(res.split()[3:])
     elif type == 'float':
-        return np.float_(res[:-1].split())
+        return np.float_(res.split()[3:])
     else:
-        return res[:-1]
+        return res[37:]
+
+
+def set_nifti_field(fname, name, value, out_file=None):
+    values = np.atleast_1d(value)
+    check_output(['nifti_tool', '-mod_hdr', '-mod_field', name, f"{' '.join([str(v) for v in values])}", '-infiles', fname] 
+        + (['-overwrite'] if out_file is None else ['-prefix', out_file]))
 
 
 def get_S2E_mat(fname, mat='S2E'):

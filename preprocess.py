@@ -19,6 +19,7 @@ try:
     import seaborn as sns
 except ImportError:
     warnings.warn('Cannot import seaborn, which is required for some functions.', ImportWarning)
+import nibabel
 from . import six, afni, io, utils, dicom, dicom_report, math
 
 
@@ -1215,6 +1216,22 @@ def skullstrip(in_file, out_file=None):
     return outputs
 
 
+def _ants_sanitize_input(in_file, overwrite=True):
+    '''
+    It is important that the input is 3D (not 4D) dataset.
+    But it is OK that the input is not in ORIG space (e.g., MNI), or RAS+/NIFTI orientation.
+    Otherwise antsRegistration will spit WEIRD result, e.g., rotate cerebellum to forehead...
+    '''
+    if afni.get_dims(in_file)[3] > 1:
+        print(f'+* WARNING: "{in_file}" contains multiple volumes. Only the first volume will be considered in the registration.')
+        out_file = in_file if overwrite else utils.temp_prefix(suffix='.nii')
+        is_temp = not overwrite
+        utils.run(f"3dTcat -prefix {out_file} -overwrite {in_file}'[0]'")
+    else:
+        out_file, is_temp = in_file, False
+    return out_file, is_temp
+
+
 def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask=None, 
     base_mask_SyN=None, in_mask_SyN=None, preset=None):
     '''
@@ -1256,15 +1273,7 @@ def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask
         'inv_warped': f"{prefix}_inv_warped.nii.gz",
     }
     # Strip and sanitize base_file or in_file if required
-    def sanitize_input(in_file):
-        '''
-        It is important that the input is 3D (not 4D) dataset.
-        But it is OK that the input is not in ORIG space (e.g., MNI), or RAS+/NIFTI orientation.
-        Otherwise antsRegistration will spit WEIRD result, e.g., rotate cerebellum to forehead...
-        '''
-        if afni.get_dims(in_file)[3] > 1:
-            print(f'+* WARNING: "{in_file}" contains multiple volumes. Only the first volume will be considered in the registration.')
-            utils.run(f"3dTcat -prefix {in_file} -overwrite {in_file}'[0]'")
+
     if strip is None:
         strip = [False, False]
     if isinstance(strip, str):
@@ -1274,8 +1283,8 @@ def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask
     moving = f"{temp_dir}/input.nii"
     D1 = pc.run(strip[0], base_file, out_file=fixed)
     D2 = pc.run(strip[1], in_file, out_file=moving)
-    pc.run(sanitize_input, fixed, _depends=[D1])
-    pc.run(sanitize_input, moving, _depends=[D2])
+    pc.run(_ants_sanitize_input, fixed, _depends=[D1])
+    pc.run(_ants_sanitize_input, moving, _depends=[D2])
     pc.wait()
     # Prepare masks (e.g., strip, inversion, etc.)
     def populate_mask(mask_file, temp_dir=None, ref_file=None):
@@ -1289,7 +1298,7 @@ def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask
             out_file = utils.temp_prefix(prefix=f"{temp_dir}/tmp_", suffix='.nii')
             utils.run(f"3dcalc -a {mask_file[:-3]} -expr '1-a' -prefix {out_file} -overwrite")
         else:
-            outputs = mask_file
+            out_file = mask_file
         return out_file
     pc.run(populate_mask, base_mask, temp_dir, ref_file=base_file)
     pc.run(populate_mask, in_mask, temp_dir, ref_file=in_file)
@@ -1359,13 +1368,11 @@ def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask
                 --masks [ {base_mask_SyN if preset['transforms'][k].lower()=='syn' else base_mask}, {in_mask_SyN if preset['transforms'][k].lower()=='syn' else in_mask} ] "
         pc.run1(cmd, _error_pattern='error')
     # Apply transforms
-    sanitized = f"{temp_dir}/sanitized.nii"
-    copy_dset(in_file, sanitized)
-    sanitize_input(sanitized)
-    apply_ants([outputs['fwd_warp'], outputs['fwd_affine']], base_file, sanitized, outputs['out_file'])
+    apply_ants([outputs['fwd_warp'], outputs['fwd_affine']], base_file, in_file, outputs['out_file'])
     shutil.rmtree(temp_dir)
     all_finished(outputs)
     outputs['base_file'] = base_file
+    outputs['in_file'] = in_file
     outputs['transform'] = ANTsTransform.from_align_ants(outputs)
     outputs['transform_file'] = f"{prefix}_transform.json"
     outputs['transform'].to_json(outputs['transform_file'])
@@ -1412,20 +1419,33 @@ def apply_ants(transforms, base_file, in_file, out_file, interp=None, dim=None, 
             {' '.join(xform_cmds)}")
     else: # Apply transforms to image (e.g., 3D volume)
         if dim is None:
-            # dim = 4 if afni.get_dims(in_file)[3] > 1 else 3
             dim = 3
         if image_type is None: # 0/1/2/3 for scalar/vector/tensor/time-series
             image_type = 3 if afni.get_dims(in_file)[3] > 1 else 0
+        # Make sure the image is timeseries, rather than afni bucket, during transform
+        is_bucket = (io.get_dim_order(in_file) == 'bucket')
+        if is_bucket:
+            io.change_dim_order(in_file, dim_order='timeseries', method='afni') # Change in_file into timeseries
+        # Sanitize base_file
+        sanitized_base, is_temp = _ants_sanitize_input(base_file, overwrite=False)
+        # Apply transforms
         utils.run(f"antsApplyTransforms --float 1 \
-            -r {base_file} -i {in_file} -d {dim} --input-image-type {image_type} \
+            -r {sanitized_base} -i {in_file} -d {dim} --input-image-type {image_type} \
             -o {outputs['out_file']} --interpolation {interp} \
             {' '.join(xform_cmds)}")
+        if is_bucket:
+            io.change_dim_order(in_file, dim_order='bucket', method='afni') # Change in_file back to bucket
+            io.change_dim_order(outputs['out_file'], dim_order='bucket', method='afni') # The output should follow input
+        if is_temp:
+            os.remove(sanitized_base)
+        # Make sure out_file is of the same space as base_file
+        io.change_space(outputs['out_file'], space=io.get_space(base_file), method='nibabel') # Causion: Cannot use "afni" here...
     all_finished(outputs)
     return outputs
 
 
 class Transform(object):
-    def __init__(self, transforms, base_file=None):
+    def __init__(self, transforms, base_file=None, source_file=None):
         '''
         Parameters
         ----------
@@ -1439,22 +1459,24 @@ class Transform(object):
         '''
         self.transforms = copy.deepcopy(transforms)
         self.base_file = base_file
+        self.source_file = source_file
 
     def inverse(self):
         transforms = [transform[::-1] for transform in self.transforms[::-1]]
-        return xform.__class__(transforms, base_file=None)
+        return xform.__class__(transforms, base_file=self.source_file, source_file=self.base_file)
 
     def rebase(self, base_file):
-        return xform.__class__(self.transforms, base_file=base_file)
+        return xform.__class__(self.transforms, base_file=base_file, source_file=self.source_file)
 
     def replace_path(self, p):
         f = lambda fname: path.join(p, path.basename(fname))
         self.transforms = [(f(fwd), f(inv)) for fwd, inv in self.transforms]
         self.base_file = f(self.base_file)
+        self.source_file = f(self.source_file)
 
     def to_json(self, fname):
         with open(fname, 'w') as json_file:
-            json.dump(self.__dict__, json_file)
+            json.dump(self.__dict__, json_file, indent=4)
 
     @classmethod
     def from_json(cls, fname, replace_path=False):
@@ -1466,10 +1488,13 @@ class Transform(object):
         '''
         with open(fname) as json_file:
             data = json.load(json_file)
-        inst = cls(data['transforms'], base_file=data['base_file'])
+        inst = cls(data['transforms'], base_file=data['base_file'], source_file=data['source_file'])
         if replace_path:
             inst.replace_path(path.dirname(fname))
         return inst
+
+    def __repr__(self):
+        return f"<{self.__class__.__name__} | from {path.basename(self.source_file)} to {path.basename(self.base_file)} >"
 
 
 class ANTsTransform(Transform):
@@ -1477,7 +1502,7 @@ class ANTsTransform(Transform):
     def from_align_ants(cls, outputs):
         transforms = [(path.realpath(outputs['fwd_warp']), path.realpath(outputs['inv_warp'])), 
                       (path.realpath(outputs['fwd_affine']), path.realpath(outputs['fwd_affine'])+' -I')]
-        return cls(transforms, base_file=path.realpath(outputs['base_file']))
+        return cls(transforms, base_file=path.realpath(outputs['base_file']), source_file=path.realpath(outputs['in_file']))
 
     def apply(self, in_file, out_file, base_file=None, interp=None, **kwargs):
         '''
@@ -1492,7 +1517,7 @@ class ANTsTransform(Transform):
         For volumes, inverse transform (from base/fixed to input/moving)
         '''
         transforms = [xform_pair[1] for xform_pair in self.transforms[::-1]] # Inverse
-        base_file = self.base_file if base_file is None else base_file
+        base_file = self.source_file if base_file is None else base_file
         return apply_ants(transforms, base_file, in_file, out_file, interp=interp, **kwargs)
 
     def apply_to_points(self, in_file, out_file):

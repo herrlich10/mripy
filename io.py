@@ -728,7 +728,7 @@ def read_nii(fname, return_img=False):
     return (vol, img) if return_img else vol
 
 
-def write_nii(fname, vol, base_img=None, space=None):
+def write_nii(fname, vol, base_img=None, space=None, dim=None):
     if fname[-4:] != '.nii' and fname[-7:] != '.nii.gz':
         fname = fname + '.nii'
     if base_img is None:
@@ -737,6 +737,9 @@ def write_nii(fname, vol, base_img=None, space=None):
         affine = nibabel.load(base_img).affine
     else:
         affine = base_img.affine
+    if dim is not None:
+        # img.header['dim'] = dim # This header field will be overwritten by vol.shape
+        vol = vol.reshape(dim[1:1+dim[0]])
     img = nibabel.Nifti1Image(vol, affine)
     # https://afni.nimh.nih.gov/afni/community/board/read.php?1,149338,149340#msg-149340
     # 0 (unknown) sform not defined
@@ -745,7 +748,7 @@ def write_nii(fname, vol, base_img=None, space=None):
     # 3 (talairach) RAS+ in Talairach atlas space
     # 4 (mni) RAS+ in MNI atlas space
     if space is None:
-        space = 1
+        space = 1 if base_img is None else base_img.header['sform_code']
     img.header['sform_code'] = space
     nibabel.save(img, fname)
 
@@ -759,18 +762,78 @@ SPACE_CODE = {
 }
 
 
-def change_space(in_file, out_file=None, space=None):
+def get_space(in_file):
+    space = int(nibabel.load(in_file).header['sform_code'])
+    return {0: 'unknown', 1: 'orig', 2: 'aligned', 3: 'tlrc', 4: 'mni'}[space]
+
+
+def change_space(in_file, out_file=None, space=None, method='nibabel'):
     '''
     >>> change_space('MNI152_2009_template.nii.gz', 'template.nii', space='ORIG')
     >>> change_space('test+tlrc.HEAD') # -> test.nii as ORIG
     '''
-    if out_file is None:
-        prefix, ext = afni.split_out_file(in_file)
-        out_file = f"{prefix}.nii"
     if isinstance(space, str):
         space = SPACE_CODE[space]
-    vol, img = read_vol(in_file, return_img=True)
-    write_nii(out_file, vol, base_img=img, space=space)
+    if method == 'nibabel':
+        if out_file is None:
+            prefix, ext = afni.split_out_file(in_file)
+            out_file = f"{prefix}.nii"
+        vol, img = read_vol(in_file, return_img=True)
+        write_nii(out_file, vol, base_img=img, space=space)
+    elif method == 'afni':
+        if space is None:
+            space = 1
+        # afni.set_nifti_field(in_file, 'sform_code', space, out_file=out_file)
+        raise NotImplementedError()
+        # Error message:
+        # ** ERROR: EDIT_dset_items[244]: illegal new xyzdel
+        # ** ERROR: EDIT_dset_items[244]: illegal new xyzorient
+        # Before (with `nifti_tool -disp_hdr -field srow_x ...`):
+        # srow_x               280      4    -0.8 -0.0 -0.0 62.294399
+        # Aftre:
+        # srow_x               280      4    0.0 0.0 0.0 0.0
+        # With nibabel:
+        # srow_x               280      4    -0.7 0.000183 -0.000183 110.674217
+
+
+def get_dim_order(in_file):
+    dim = nibabel.load(in_file).header['dim']
+    if dim[0] > 4:
+        return 'bucket'
+    else:
+        return 'timeseries'
+
+
+def change_dim_order(in_file, out_file=None, dim_order=None, method='afni'):
+    '''
+    dim_order : 1D array with 8 numbers
+        e.g., np.array([  5, 300, 300, 124,   1,   2,   1,   1], dtype=np.int16) # for stats 
+        or, np.array([  4, 150, 150,  62, 158,   1,   1,   1], dtype=np.int16) # for epi
+    method : str, 'afni' | 'nibabel'
+    '''
+    if dim_order is None:
+        dim_order = 'timeseries'
+    def get_new_dim(dim, dim_order):
+        if isinstance(dim_order, str):
+            if dim_order in ['timeseries']:
+                new_dim = np.r_[4, dim[1:4], max(dim[4:]), 1, 1, 1]
+            elif dim_order in ['stats', 'bucket']:
+                new_dim = np.r_[5, dim[1:4], 1, max(dim[4:]), 1, 1]
+            else:
+                raise ValueError('** Only support "timeseries" and "bucket" dim_order.')
+        else:
+            new_dim = dim_order
+        return new_dim.astype(np.int16)
+    if method == 'nibabel':
+        if out_file is None:
+            prefix, ext = afni.split_out_file(in_file)
+            out_file = f"{prefix}.nii"
+        vol, img = read_vol(in_file, return_img=True)
+        dim = img.header['dim']
+        write_nii(out_file, vol, base_img=img, dim=get_new_dim(dim, dim_order))
+    elif method == 'afni':
+        dim = afni.get_nifti_field(in_file, 'dim', 'int')
+        afni.set_nifti_field(in_file, 'dim', get_new_dim(dim, dim_order), out_file=out_file)
 
 
 # ========== AFNI HEAD/BRIK ==========
