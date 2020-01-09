@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
+import time
 import numpy as np
 from scipy import optimize, stats
 from . import six, utils, math
@@ -62,6 +63,16 @@ class ChannelEncodingModel(object):
         self.stimulus_domain = stimulus_domain
         self.circular = circular
 
+    # get_params() and get_params() are required by sklearn
+    def get_params(self, deep=True):
+        return dict(n_channels=self.n_channels, basis_func=self.basis_func, 
+            stimulus_domain=self.stimulus_domain, circular=self.circular)
+
+    def set_params(self, **parameters):
+        for parameter, value in parameters.items():
+            setattr(self, parameter, value)
+        return self
+
     def fit(self, X, y):
         '''
         Parameters
@@ -78,7 +89,8 @@ class ChannelEncodingModel(object):
         # Step 1: Estimate W by OLS regression
         W = b @ fs.T @ np.linalg.pinv(fs @ fs.T) # Weight, n_voxels * n_channels
         # Store params
-        self.W = W
+        self.W_ = W
+        return self # Required by sklearn
 
     def predict(self, X, stimulus_domain=None, return_all=False):
         stimulus_domain = self.stimulus_domain if stimulus_domain is None else stimulus_domain
@@ -95,7 +107,7 @@ class ChannelEncodingModel(object):
         stimulus_domain = self.stimulus_domain if stimulus_domain is None else stimulus_domain
         fs_domain = self.basis_func(stimulus_domain) # n_channels * n_domain
         if method == 'ols':
-            pRF = self.W @ fs_domain # n_voxels * n_domain
+            pRF = self.W_ @ fs_domain # n_voxels * n_domain
         elif method == 'ridge': 
             # After {Sprague2013}, to ensure that most of the pRFs were sufficiently unimodal
             # However, the method doesn't seem to help much in my simulation...
@@ -121,7 +133,7 @@ class ChannelEncodingModel(object):
         
     def inverted_encoding(self, X):
         b = X.T # Voxel BOLD response, n_voxels * n_trials
-        fs = np.linalg.pinv(self.W.T @ self.W) @ self.W.T @ b # Inverted channel response, n_channels * n_trials
+        fs = np.linalg.pinv(self.W_.T @ self.W_) @ self.W_.T @ b # Inverted channel response, n_channels * n_trials
         return fs.T # n_trials * n_channels
 
     def voxel_inversion(self, X, stimulus_domain=None):
@@ -164,6 +176,17 @@ class BayesianChannelModel(object):
         self.stimulus_prior = 1 if stimulus_prior is None else stimulus_prior
         self.global_search = global_search
 
+    # get_params() is required by sklearn
+    def get_params(self, deep=True):
+        return dict(n_channels=self.n_channels, basis_func=self.basis_func, stimulus_domain=self.stimulus_domain,
+            circular=self.circular, stimulus_prior=self.stimulus_prior, global_search=self.global_search)
+
+    # set_params() is required by sklearn
+    def set_params(self, **parameters):
+        for parameter, value in parameters.items():
+            setattr(self, parameter, value)
+        return self
+
     def fit(self, X, y):
         '''
         Parameters
@@ -188,19 +211,20 @@ class BayesianChannelModel(object):
         # Note that Gilles used `np.linalg.lstsq()` here, which should be numerically adept.
         W = b @ fs.T @ np.linalg.pinv(fs @ fs.T) # Weight, n_voxels * n_channels
         # Store params
-        self.W = W
+        self.W_ = W
         # Step 2: Estimate tau, rho, sigma by ML optimization (gradient-based)
         z = b - W @ fs # n_voxels * n_trials
         # Initial params
         tau0 = np.std(b, axis=1)
         rho0 = np.mean(np.corrcoef(b)[np.triu_indices(len(tau0), k=1)])
         sigma0 = np.mean(np.std(fs, axis=1))
-        params0 = np.r_[tau0, rho0, sigma0]
-        bounds = np.c_[np.zeros(len(params0)), np.r_[tau0*5, 1, sigma0*5]]
+        params0 = np.r_[tau0, rho0, sigma0/5.0]
+        bounds = np.c_[np.ones(len(params0))*1e-4, np.r_[tau0*5, 1, sigma0*5]]
         # Conjugate gradient algorithm, due to lack of support for bounds, requires multi-start to avoid/alleviate being trapped in local minima.
+        print('>> Start maximum likelihood optimization...')
         if self.global_search:
             def accept_test(f_new, x_new, f_old, x_old):
-                Omega = self._calc_Omega(self.W, x_new[:-2], x_new[-2], x_new[-1])
+                Omega = self._calc_Omega(self.W_, x_new[:-2], x_new[-2], x_new[-1])
                 # is_pos_semi_def = np.all(np.linalg.eigvals(Omega) > 0)
                 # return (f_new < f_old and f_new > 0 and is_pos_semi_def)
                 is_singular = np.linalg.matrix_rank(Omega, hermitian=True) < Omega.shape[0]
@@ -208,13 +232,28 @@ class BayesianChannelModel(object):
             res = optimize.basinhopping(self._negloglikelihood, params0, accept_test=accept_test, 
                 minimizer_kwargs=dict(args=(z, W), method='L-BFGS-B', jac=self._negloglikelihood_prime, bounds=bounds))
         else:
-            res = optimize.minimize(self._negloglikelihood, params0, args=(z, W), method='L-BFGS-B', jac=self._negloglikelihood_prime, bounds=bounds)
+            class Counter(object):
+                def __init__(self, model, args):
+                    self.count = 0
+                    self.last_time = time.time()
+                    self.model = model
+                    self.args = args
+                def step(self, xk):
+                    self.count += 1
+                    cost = self.model._negloglikelihood(xk, *self.args)
+                    curr_time = time.time()
+                    duration = curr_time - self.last_time
+                    self.last_time = curr_time
+                    print(f"iter#{self.count:03d} ({utils.format_duration(duration)}): cost={cost:.4f}, tau[-3:]={xk[-5:-2]}, rho={xk[-2]:.4f}, sigma={xk[-1]:.4f}")
+            res = optimize.minimize(self._negloglikelihood, params0, args=(z, W), method='L-BFGS-B', 
+                jac=self._negloglikelihood_prime, bounds=bounds, callback=Counter(model=self, args=(z, W)).step)
         params = res.x
         print(f"cost={res.fun}, iter={res.nit}, func_eval={res.nfev}, success={res.success}, {res.message}")
-        print(np.r_[params0[0], params0[-2], params0[-1]], '-->', np.r_[params[0], params[-2], params[-1]])
+        print(params0[-3:], '-->', params[-3:])
         # Store params
-        self.tau, self.rho, self.sigma = params[:-2], params[-2], params[-1]
-        self.Omega = self._calc_Omega(self.W, self.tau, self.rho, self.sigma)
+        self.tau_, self.rho_, self.sigma_ = params[:-2], params[-2], params[-1]
+        self.Omega_ = self._calc_Omega(self.W_, self.tau_, self.rho_, self.sigma_)
+        return self # Required by sklearn
 
     def predict(self, X, stimulus_domain=None, stimulus_prior=None, return_all=False):
         stimulus_domain = self.stimulus_domain if stimulus_domain is None else stimulus_domain
@@ -234,8 +273,8 @@ class BayesianChannelModel(object):
         b = X.T
         s = y
         fs = self.basis_func(s)
-        z = b - self.W @ fs
-        return self._calc_L(z, self.W, self.tau, self.rho, self.sigma)
+        z = b - self.W_ @ fs
+        return self._calc_L(z, self.W_, self.tau_, self.rho_, self.sigma_)
 
     def bayesian_inversion(self, X, stimulus_domain=None, stimulus_prior=None, density=True):
         '''
@@ -254,12 +293,17 @@ class BayesianChannelModel(object):
         stimulus_prior = self.stimulus_prior if stimulus_prior is None else stimulus_prior
         b = X.T[:,np.newaxis,:] # n_voxels * n_domain * n_trials
         fs = self.basis_func(stimulus_domain) # n_channels * n_domain
-        predicted_mean_resp = (self.W @ fs)[...,np.newaxis] # n_voxels * n_domain * n_trials
+        predicted_mean_resp = (self.W_ @ fs)[...,np.newaxis] # n_voxels * n_domain * n_trials
         z = b - predicted_mean_resp
-        mv_norm = stats.multivariate_normal(np.zeros(self.Omega.shape[0]), self.Omega)
-        likelihood = mv_norm.pdf(z.T) # n_trials * n_domain
-        posterior = likelihood * stimulus_prior # n_trials * n_domain
-        posterior /= np.sum(posterior, axis=1, keepdims=True)
+        # mv_norm = stats.multivariate_normal(np.zeros(self.Omega.shape[0]), self.Omega)
+        mv_norm = stats.multivariate_normal(np.zeros(self.Omega_.shape[0]), self.Omega_, allow_singular=True)
+        # likelihood = mv_norm.pdf(z.T) # n_trials * n_domain
+        # posterior = likelihood * stimulus_prior # n_trials * n_domain
+        # posterior /= np.sum(posterior, axis=1, keepdims=True)
+        # The above code will underflow
+        loglikelihood = mv_norm.logpdf(z.T) # n_trials * n_domain
+        logposterior = loglikelihood + np.log(stimulus_prior) # n_trials * n_domain
+        posterior = math.normalize_logP(logposterior, axis=1)
         if density:
             posterior /= stimulus_domain[-1] - stimulus_domain[0]
         return posterior
@@ -274,6 +318,7 @@ class BayesianChannelModel(object):
         tau_prime = self._dL_dtau(z, Omega, W, tau, rho, sigma)
         rho_prime = self._dL_drho(z, Omega, W, tau, rho, sigma)
         sigma_prime = self._dL_dsigma(z, Omega, W, tau, rho, sigma)
+        print(f"{tau_prime[-3:]}, {rho_prime}, {sigma_prime}")
         return -np.r_[tau_prime, rho_prime, sigma_prime]
 
     def _negloglikelihood_prime_numerical(self, params, z, W, h=1e-6):

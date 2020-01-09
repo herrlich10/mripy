@@ -20,6 +20,9 @@ vr_parsers = {
     'LT': lambda x: str.strip(x.decode(encoding)), # Long Text
     'UT': lambda x: str.strip(x.decode(encoding)), # Unlimited Text
 
+    'PN': lambda x: str.strip(x.decode(encoding)), # Person Name
+    'AS': lambda x: str.strip(x.decode(encoding)), # Age String ??? e.g., 039Y
+
     'DA': lambda x: datetime.strptime(x.decode(encoding), '%Y%m%d').date(), # Date
     'TM': lambda x: datetime.strptime(x.decode(encoding).strip(), '%H%M%S.%f').time(), # Time
 
@@ -79,6 +82,11 @@ Siemens = {
 # https://dicom.innolitics.com/ciods
 # Note that the hex codes must be in upper case. 
 tag_parsers = {
+    '0010,0010': ('PatientName', vr_parsers['PN']),
+    '0010,0030': ('PatientBirthDate', vr_parsers['DA']),
+    '0010,0040': ('PatientSex', vr_parsers['CS']),
+    '0010,1010': ('PatientAge', vr_parsers['AS']),
+    '0010,1030': ('PatientWeight', vr_parsers['DS']),
     '0002,0013': ('ImplementationVersionName', vr_parsers['SH']),
     '0008,0022': ('AcquisitionDate', vr_parsers['DA']),
     '0008,0032': ('AcquisitionTime', vr_parsers['TM']),

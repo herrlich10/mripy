@@ -1350,12 +1350,13 @@ def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask
                 preset = json.load(json_file)
         # `preset` is now a dict
         # Generate antsRegistration command line
+        init_moving_cmd = '--initial-moving-transform [ {fixed}, {moving}, 1 ]'
         cmd =  f"antsRegistration -d {preset['dimension']} --float 1 --verbose \
             --output [ {prefix}_, {outputs['fwd_warped']}, {outputs['inv_warped']} ] \
             --interpolation {preset['interpolation']} \
             --collapse-output-transforms 1 \
             --write-composite-transform {int(preset['write_composite_transform'])} \
-            --initial-moving-transform [ {fixed}, {moving}, 1 ]  \
+            {init_moving_cmd} \
             --winsorize-image-intensities [ {preset['winsorize_lower_quantile']}, {preset['winsorize_upper_quantile']} ] "
         for k in range(len(preset['transforms'])):
             cmd += f"--transform {preset['transforms'][k]}[ {', '.join([f'{x:g}' for x in preset['transform_parameters'][k]])} ] \
@@ -1625,7 +1626,7 @@ def align_anat(base_file, in_file, out_file, strip=None, N4=None, init_shift=Non
         interp = 'wsinc5'
     init_shift_cmd = ''
     if init_shift is None:
-        if init_rotate is None:
+        if init_rotate is None and max_shift is None:
             init_shift_cmd = '-cmass'
     if max_rotate is None:
         max_rotate = 90
@@ -1680,15 +1681,15 @@ def align_anat(base_file, in_file, out_file, strip=None, N4=None, init_shift=Non
         transforms.insert(0, init_xform)
     # Estimate best alignment parameters
     if method == '3dallineate':
-        res = utils.run(f"3dAllineate -final {interp} -cost {cost} -allcost -warp {n_params} \
+        res = utils.run(f'''3dAllineate -final {interp} -cost {cost} -allcost -warp {n_params} \
             {init_shift_cmd} \
             -maxrot {max_rotate} {'' if max_shift is None else f'-maxshf {max_shift}'} \
             -base {temp_dir}/base_ns.nii -input {temp_dir}/in_ns.nii \
             -autoweight -source_automask+2 -twobest 11 -fineblur 1 \
             {f'-emask {emask}' if emask is not None else ''} \
-            {f'-wtprefix {0}'.format(outputs['weight_file']) if save_weight is not None else ''} \
+            {f'-wtprefix {outputs["weight_file"]}' if save_weight is not None else ''} \
             -1Dmatrix_save {temp_dir}/in2base.aff12.1D \
-            -prefix {temp_dir}/out_ns.nii -overwrite")
+            -prefix {temp_dir}/out_ns.nii -overwrite''')
         transforms.insert(0, f"{temp_dir}/in2base.aff12.1D")
         outputs['cost'] = parse_cost(res['output'])
     elif method == 'align_epi_anat':
@@ -1943,15 +1944,18 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
         outputs['n_censored'] = [np.sum(c[b[k]:b[k+1]]==0) for k in range(len(b)-1)]
     # Prepare motion and censor commands
     total_regressors = 0
-    X = np.loadtxt(outputs['motion_file'])
-    all_zero_cols = ~np.any(X, axis=0) 
-    motion_labels = ['roll', 'pitch', 'yaw', 'dI-S', 'dR-L', 'dA-P']
-    motion_cmds = []
-    for k, motion_label in enumerate(motion_labels):
-        if not all_zero_cols[k]: # Exclude all-zero columns from regressors
-            total_regressors += 1
-            motion_cmds.append(f"-stim_file {total_regressors} {outputs['motion_file']}'[{k}]' \
-                -stim_base {total_regressors} -stim_label {total_regressors} {motion_label}")
+    if motion_files is not None:
+        X = np.loadtxt(outputs['motion_file'])
+        all_zero_cols = ~np.any(X, axis=0) 
+        motion_labels = ['roll', 'pitch', 'yaw', 'dI-S', 'dR-L', 'dA-P']
+        motion_cmds = []
+        for k, motion_label in enumerate(motion_labels):
+            if not all_zero_cols[k]: # Exclude all-zero columns from regressors
+                total_regressors += 1
+                motion_cmds.append(f"-stim_file {total_regressors} {outputs['motion_file']}'[{k}]' \
+                    -stim_base {total_regressors} -stim_label {total_regressors} {motion_label}")
+    else:
+        motion_cmds = []
     censor_cmd = f"-censor {outputs['censor_file']}" if censor else ''
     # Prepare model
     stim_cmds = []

@@ -378,7 +378,7 @@ def get_brick_labels(fname, label2index=False):
     if label2index:
         return {label: k for k, label in enumerate(labels)}
     else:
-        return labels
+        return np.array(labels)
 
 
 def get_TR(fname):

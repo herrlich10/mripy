@@ -105,5 +105,13 @@ def circular_std(x, domain=None, weight=None, axis=None):
     return std_x
 
 
+def normalize_logP(logP, axis=None):
+    # https://stats.stackexchange.com/questions/66616/converting-normalizing-very-small-likelihood-values-to-probability
+    max_logP = np.max(logP, axis=axis, keepdims=True)
+    logP = logP - max_logP # Make sure the larger elements (at least the largest one) no longer underflow
+    P = np.exp(logP) # It is OK that the smaller elements still underflow
+    return P / np.sum(P, axis=axis, keepdims=True)
+
+
 if __name__ == '__main__':
     pass
