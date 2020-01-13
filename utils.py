@@ -4,11 +4,13 @@ from __future__ import print_function, division, absolute_import, unicode_litera
 import sys, os, re, glob, shlex, string
 import subprocess, multiprocessing, ctypes, time, uuid
 import json
+import tables, warnings
 from datetime import datetime
 from itertools import chain
 from collections import OrderedDict
 from os import path
 import numpy as np
+from deepdish import io as dio
 from . import six, afni
 
 
@@ -424,3 +426,24 @@ def parallel_3D(cmd, in_file, prefix, n_jobs=1, schema=None, fname_mapper=None, 
     # Remove temp files
     for f in glob.glob(path.join(output_dir, tmp_+'*')):
         os.remove(f)
+
+
+class Savable(object):
+    def save(self, fname):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=tables.NaturalNameWarning)
+            dio.save(fname, self.to_dict())
+
+    @classmethod
+    def load(cls, fname):
+        return cls.from_dict(dio.load(fname))
+
+
+class Savable2(object):
+    def save(self, fname):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', category=tables.NaturalNameWarning)
+            dio.save(fname, self.to_dict())
+
+    def load(self, fname):
+        self.from_dict(dio.load(fname))

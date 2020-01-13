@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
 import copy
-import tables, warnings
 from os import path
 from collections import OrderedDict
 import itertools
@@ -10,20 +9,8 @@ import numpy as np
 from scipy import stats, signal, interpolate
 import matplotlib.pyplot as plt
 import seaborn as sns
-from deepdish import io as dio
 import pandas as pd
 from . import six, afni, io, utils, dicom, math
-
-
-class Savable(object):
-    def save(self, fname):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore', category=tables.NaturalNameWarning)
-            dio.save(fname, self.to_dict())
-
-    @classmethod
-    def load(cls, fname):
-        return cls.from_dict(dio.load(fname))
 
 
 class Attributes(object):
@@ -115,7 +102,7 @@ class Attributes(object):
         return self
 
 
-class Raw(Savable, object):
+class Raw(utils.Savable, object):
     def __init__(self, fname, mask=None, TR=None):
         if fname is None:
             return # Skip __init__(), create an empty Raw object, and manually initialize it later.
@@ -201,7 +188,7 @@ def _copy(self):
     return inst
 
 
-class RawCache(Savable, object):
+class RawCache(utils.Savable, object):
     def __init__(self, fnames, mask, TR=None, cache_file=None, force_redo=False):
         if fnames is None:
             return # Skip __init__(), create an empty RawCache object, and manually initialize it later.
@@ -358,7 +345,7 @@ def create_base_corr_func(times, baseline=None, method=None):
             return lambda x: x - method(x[...,time_sel], axis=-1, keepdims=True)
 
 
-class Epochs(Savable, object):
+class Epochs(utils.Savable, object):
     def __init__(self, raw, events, event_id=None, tmin=-5, tmax=15, baseline=(-2,0), dt=0.1, interp='linear', hamm=None, conditions=None):
         if raw is None:
             return # Skip __init__(), create an empty Epochs object, and manually initialize it later.

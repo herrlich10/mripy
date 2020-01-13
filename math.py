@@ -113,5 +113,16 @@ def normalize_logP(logP, axis=None):
     return P / np.sum(P, axis=axis, keepdims=True)
 
 
+def gaussian_logpdf(x, mean, cov, cov_inv=None, axis=-1):
+    '''
+    More efficient multivariate normal distribution log pdf than stats.multivariate_normal.logpdf()
+    '''
+    z = (x.swapaxes(axis,-1) - mean)[...,np.newaxis] # shape=(...,n,1)
+    M = np.linalg.pinv(cov) if cov_inv is None else cov_inv # shape=(n,n). This can be slow, precompute if possible.
+    # maxmul() used here is much more efficient (10x) for large matrices than dot() used in stats.multivariate_normal
+    maha = (z.swapaxes(-1,-2) @ M @ z)[...,0,0] # (...,1,n) @ (n,n) @ (...,n,1) = (...,1,1)
+    return -0.5 * (len(mean)*np.log(2*np.pi) + np.prod(np.linalg.slogdet(cov)) + maha)
+
+
 if __name__ == '__main__':
     pass
