@@ -27,7 +27,7 @@ def basis_vanBergen2015(s, n_channels=8):
     return fs
 
 
-def basis_Sprague2013(s, n_channels=6, spacing=2, size=None, power=7, dim=1):
+def basis_Sprague2013(s, n_channels=6, spacing=2, size=None, power=7, dim=1, intercept=False):
     '''
     Parameters
     ----------
@@ -51,6 +51,8 @@ def basis_Sprague2013(s, n_channels=6, spacing=2, size=None, power=7, dim=1):
         center = np.c_[X.ravel(), Y.ravel()] # 2D channel array is serialized in row-first order
         r = np.linalg.norm(s.T[np.newaxis,...] - center[...,np.newaxis], axis=1)
     fs = np.where(r<size, (0.5*np.cos(r/size*np.pi) + 0.5)**7, 0) # n_channels * n_trials
+    if intercept:
+        fs = np.vstack([fs, np.ones(len(s))]) # Learnable bias
     return fs
 
 
@@ -70,6 +72,7 @@ class BaseModel(utils.Savable2):
 
     def from_dict(self, d):
         self.__dict__.update(d)
+        return self
 
 
 class ChannelEncodingModel(BaseModel):
@@ -189,7 +192,7 @@ class BayesianChannelModel(BaseModel):
         self.basis_func = basis_func
         self.stimulus_domain = stimulus_domain
         self.circular = circular
-        self.stimulus_prior = 1 if stimulus_prior is None else stimulus_prior
+        self.stimulus_prior = 1 if stimulus_prior is None else stimulus_prior # TODO: This should be refactored for CV
         self.global_search = global_search
 
     # get_params() is required by sklearn
@@ -435,47 +438,11 @@ class BayesianChannelModel(BaseModel):
         return (dL_dOmega * dOmega_dsigma.T).sum()
 
 
-# class EnsembleModel(BaseModel):
-#     def __init__(self, n_ensemble=10, base_model=BayesianChannelModel, model_kws=None, pred_method=None, pred_options=None):
-#         self.n_ensemble = n_ensemble
-#         self.base_model = base_model
-#         self.model_kws = model_kws
-#         self.pred_method = pred_method
-#         self.pred_options = pred_options
-
-#     # get_params() is required by sklearn
-#     def get_params(self, deep=True):
-#         return dict(n_ensemble=self.n_ensemble, base_model=self.base_model, model_kws=self.model_kws,
-#             pred_method=self.pred_method, pred_options=self.pred_options)
-
-#     def fit(self, X, y):
-#         # Perform argument validation here so that get_params() and __init__() have the same effect
-#         if self.model_kws is None:
-#             self.model_kws = {}
-#         if self.pred_method is None:
-#             self.pred_method = 'map' if hasattr(self.base_model, '_pidx') else 'mean' 
-#         self.pred_options = dict(dict(pidx=(self.base_model._pidx if hasattr(self.base_model, '_pidx') else -1)), 
-#             **({} if self.pred_options is None else self.pred_options))
-#         self.models_ = [self.base_model(**self.model_kws).fit(X[:,k::self.n_ensemble], y) for k in range(self.n_ensemble)]
-#         return self # Required by sklearn
-
-#     def predict(self, X, method=None, options=None, return_all=False, pred_kws=None):
-#         method = self.pred_method if method is None else method
-#         options = self.pred_options if options is None else options
-#         pred_kws = dict(dict(return_all=(True if method in ['map'] else False)), **({} if pred_kws is None else pred_kws))
-#         preds = [model.predict(X[:,k::self.n_ensemble], **pred_kws) for k, model in enumerate(self.models_)]
-#         if method == 'mean':
-#             y_hat = np.mean([pred[0] if isinstance(pred, tuple) else pred for pred in preds], axis=0)
-#         elif method == 'map':
-#             stimulus_domain = pred_kws['stimulus_domain'] if 'stimulus_domain' in pred_kws else self.model_kws['stimulus_domain']
-#             posterior = np.mean([prep[options['pidx']] for prep in preds], axis=0)
-#             y_hat = stimulus_domain[np.argmax(posterior, axis=1)]
-#         return (y_hat, preds) if return_all else y_hat
-
 class EnsembleModel(BaseModel):
     def __init__(self, n_ensemble=10, base_model='required', pred_method=None, pred_options=None):
         # Cannot use 1) **kwargs; 2) class as argument. Use instance instead (__class__ + get_params).
         # Otherwise you may get the misleading "TypeError: get_params() missing 1 required positional argument: 'self'".
+        # Also cannot modify any argument, otherwise sklearn's clone() method will complain during cross-validation.
         self.n_ensemble = n_ensemble
         self.base_model = base_model
         self.pred_method = pred_method
@@ -487,11 +454,9 @@ class EnsembleModel(BaseModel):
             pred_method=self.pred_method, pred_options=self.pred_options)
 
     def fit(self, X, y):
-        # Perform argument validation here so that get_params() and __init__() have the same effect
-        if self.pred_method is None:
-            self.pred_method = 'map' if hasattr(self.base_model, '_pidx') else 'mean' 
-        self.pred_options = dict(dict(pidx=(self.base_model._pidx if hasattr(self.base_model, '_pidx') else -1)), 
-            **({} if self.pred_options is None else self.pred_options))
+        # Perform argument validation here (as recommended by sklearn) so that get_params() and __init__() have the same effect 
+        # This is refactored so that load() can work without fit()
+        self._set_default_params()
         self.models_ = [self.base_model.__class__(**self.base_model.get_params()).fit(X[:,k::self.n_ensemble], y) for k in range(self.n_ensemble)]
         return self # Required by sklearn
 
@@ -507,6 +472,23 @@ class EnsembleModel(BaseModel):
             posterior = np.mean([prep[options['pidx']] for prep in preds], axis=0)
             y_hat = stimulus_domain[np.argmax(posterior, axis=1)]
         return (y_hat, preds) if return_all else y_hat
+
+    def _set_default_params(self):
+        if self.pred_method is None:
+            self.pred_method = 'map' if hasattr(self.base_model, '_pidx') else 'mean' 
+        self.pred_options = dict(dict(pidx=(self.base_model._pidx if hasattr(self.base_model, '_pidx') else -1)), 
+            **({} if self.pred_options is None else self.pred_options))
+
+    def to_dict(self):
+        d = super().to_dict()
+        d['models_'] = [model.to_dict() for model in d['models_']]
+        return d
+
+    def from_dict(self, d):
+        self._set_default_params()
+        d['models_'] = [self.base_model.__class__(**self.base_model.get_params()).from_dict(model) for model in d['models_']]
+        self.__dict__.update(d)
+        return self
 
 
 if __name__ == '__main__':
