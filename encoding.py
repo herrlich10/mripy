@@ -113,7 +113,8 @@ class ChannelEncodingModel(BaseModel):
         stimulus_domain = self.stimulus_domain if stimulus_domain is None else stimulus_domain
         channel_resp = self.inverted_encoding(X) # n_trials * n_channels
         evidence = self.correlation_inversion(X, stimulus_domain=None) # n_trials * n_domain
-        y_map = stimulus_domain[np.argmax(evidence, axis=1)] # n_trials
+        # y_map = stimulus_domain[np.argmax(evidence, axis=1)] # n_trials
+        y_map = stimulus_domain[math.median_argmax(evidence, axis=1)] # n_trials
         # y_mean = np.sum(stimulus_domain * evidence, axis=1) / np.sum(evidence, axis=1) # n_trials
         # y_std = np.sqrt(np.sum((stimulus_domain[np.newaxis,:] - y_mean[:,np.newaxis])**2 * evidence, axis=1) \
         #     / np.sum(evidence, axis=1)) # n_trials
@@ -282,6 +283,7 @@ class BayesianChannelModel(BaseModel):
         stimulus_prior = self.stimulus_prior if stimulus_prior is None else stimulus_prior
         posterior = self.bayesian_inversion(X, stimulus_domain=stimulus_domain, stimulus_prior=stimulus_prior) # n_trials * n_domain
         y_map = stimulus_domain[np.argmax(posterior, axis=1)] # n_trials
+        # y_map = stimulus_domain[math.median_argmax(posterior, axis=1)] # n_trials
         if self.circular:
             y_mean = math.circular_mean(stimulus_domain, domain=stimulus_domain, weight=posterior, axis=1)
             y_std = math.circular_std(stimulus_domain, domain=stimulus_domain, weight=posterior, axis=1)

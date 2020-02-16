@@ -124,5 +124,11 @@ def gaussian_logpdf(x, mean, cov, cov_inv=None, axis=-1):
     return -0.5 * (len(mean)*np.log(2*np.pi) + np.prod(np.linalg.slogdet(cov)) + maha)
 
 
+def median_argmax(x, axis=-1):
+    y = x.swapaxes(axis, -1)
+    res = [np.median(np.nonzero(yy == np.max(yy))[0]) for yy in y.reshape(-1, x.shape[axis])]
+    return np.reshape(res, y.shape[:-1]).astype(int)
+
+
 if __name__ == '__main__':
     pass
