@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import os, glob, shutil, shlex, re, subprocess, multiprocessing, warnings
+import os, glob, shutil, shlex, re, subprocess, multiprocessing, warnings, time
 import json, copy
 from os import path
 from collections import OrderedDict
@@ -577,6 +577,9 @@ def assign_mp2rage_labels(T1s, dicom_dirs, dicom_ext='.IMA'):
 
 
 def create_mp2rage_SNR_mask(T1s, out_file):
+    '''
+    Need to call prep.assign_mp2rage_labels() first.
+    '''
     temp_dir = utils.temp_folder()
     out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True, trailing_slash=True)
     outputs = {
@@ -742,13 +745,17 @@ def average_anat(T1s, out_file, template_idx=0, T1s_ns=None, weight=None):
     return outputs
 
 
-def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, V1=True, fs_ver=None):
+def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, V1=True, hires=True, fs_ver=None):
     '''
     Parameters
     ----------
+    T1s : list of str | 'brainmask_edit' | 'wm_edit'
     fs_ver : {'v6', 'v6.hcp', 'skip'}
     '''
-    if isinstance(T1s, six.string_types):
+    start_time = time.time()
+    assert(utils.has_hcp_retino_docker())
+    edits = ['brainmask_edit', 'wm_edit']
+    if isinstance(T1s, six.string_types) and T1s not in edits:
         T1s = [T1s]
     out_dir = path.realpath(out_dir)
     subjects_dir, subj = path.split(out_dir) # Environment variable may need full path
@@ -764,31 +771,54 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, V1=True, fs_ver=None
     if not path.exists(f'{subjects_dir}/V1_average'):
         os.symlink(f"{os.environ['FREESURFER_HOME']}/subjects/V1_average", f"{subjects_dir}/V1_average")
     # Run recon-all
-    expert_file = f"{temp_dir}/expert_options.txt"
-    with open(expert_file, 'w') as fo:
-        fo.write('mris_inflate -n 30\n')
     if fs_ver is None:
-        fs_ver = 'v6' # {'v6', 'v6.hcp'}
-    if fs_ver == 'v6':
-        utils.run(f"recon-all -s {subj} \
-            {' '.join([f'-i {T1}' for T1 in T1s])} \
-            {f'-T2 {T2} -T2pial' if T2 is not None else ''} \
-            {f'-FLAIR {FLAIR} -FLAIRpial' if FLAIR is not None else ''} \
-            -all -hires -expert {expert_file} \
-            -parallel -openmp {DEFAULT_JOBS} \
-            {'-label-v1' if V1 else ''}", 
-            error_pattern='', goal_pattern='recon-all .+ finished without error')
-    elif fs_ver == 'v6.hcp':
-        utils.run(f"recon-all.v6.hires -s {subj} \
-            {' '.join([f'-i {T1}' for T1 in T1s])} \
-            {f'-T2 {T2} -T2pial' if T2 is not None else ''} \
-            {f'-FLAIR {FLAIR} -FLAIRpial' if FLAIR is not None else ''} \
-            -all -conf2hires -expert {expert_file} \
-            -parallel -openmp {DEFAULT_JOBS} \
-            {'-label-v1' if V1 else ''}", 
-            error_pattern='', goal_pattern='recon-all .+ finished without error')
-    elif fs_ver == 'skip':
-        pass
+        fs_ver = 'v6' # {'v6', 'v6.hcp', 'skip'}
+    if T1s == 'brainmask_edit': # Manual edit brainmask.mgz
+        if fs_ver == 'v6':
+            hires_cmd = f"-hires" if hires else ''
+            utils.run(f"recon-all -s {subj} \
+                -autorecon-pial {hires_cmd} \
+                -parallel -openmp {DEFAULT_JOBS}",
+                error_pattern='', goal_pattern='recon-all .+ finished without error')
+        elif fs_ver == 'skip':
+            pass
+    elif T1s == 'wm_edit': # Manual edit control points and wm.mgz (in addition to brainmask.mgz)
+        if fs_ver == 'v6':
+            hires_cmd = f"-hires" if hires else ''
+            utils.run(f"recon-all -s {subj} \
+                -autorecon2-cp -autorecon2-wm -autorecon-pial {hires_cmd} \
+                -parallel -openmp {DEFAULT_JOBS}",
+                error_pattern='', goal_pattern='recon-all .+ finished without error')
+        elif fs_ver == 'skip':
+            pass
+    else: # Standard recon-all
+        if hires:
+            expert_file = f"{temp_dir}/expert_options.txt"
+            with open(expert_file, 'w') as fo:
+                fo.write('mris_inflate -n 30\n')
+        if fs_ver == 'v6':
+            hires_cmd = f"-hires -expert {expert_file}" if hires else ''
+            utils.run(f"recon-all -s {subj} \
+                {' '.join([f'-i {T1}' for T1 in T1s])} \
+                {f'-T2 {T2} -T2pial' if T2 is not None else ''} \
+                {f'-FLAIR {FLAIR} -FLAIRpial' if FLAIR is not None else ''} \
+                -all {hires_cmd} \
+                -parallel -openmp {DEFAULT_JOBS} \
+                {'-label-v1' if V1 else ''}", 
+                error_pattern='', goal_pattern='recon-all .+ finished without error')
+        elif fs_ver == 'v6.hcp':
+            hires_cmd = f"-conf2hires -expert {expert_file}" if hires else ''
+            utils.run(f"recon-all.v6.hires -s {subj} \
+                {' '.join([f'-i {T1}' for T1 in T1s])} \
+                {f'-T2 {T2} -T2pial' if T2 is not None else ''} \
+                {f'-FLAIR {FLAIR} -FLAIRpial' if FLAIR is not None else ''} \
+                -all {hires_cmd} \
+                -parallel -openmp {DEFAULT_JOBS} \
+                {'-label-v1' if V1 else ''}", 
+                error_pattern='', goal_pattern='recon-all .+ finished without error')
+        elif fs_ver == 'skip':
+            pass
+    print('\n==============================\n')
     # Make SUMA dir and viewing script
     create_suma_dir(out_dir, NIFTI=False)
     os.rename(outputs['suma_dir'], outputs['suma_dir']+'_woNIFTI')
@@ -800,6 +830,7 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, V1=True, fs_ver=None
 
     shutil.rmtree(temp_dir)
     all_finished(outputs)
+    print(f'>> The surface reconstruction process for "{subj}" took {utils.format_duration(time.time() - start_time)}.')
     return outputs
 
 
@@ -835,10 +866,7 @@ def create_hcp_retinotopic_atlas(subj_dir, suma='SUMA', NIFTI=True):
     Create HCP retinotopic atlas (benson14 template) using docker,
     and convert the volume and surface datasets into SUMA format.
     '''
-    try:
-        utils.run(f"docker image list", goal_pattern='nben/neuropythy')
-    except RuntimeError as err:
-        print('** Please check whether docker desktop is running.')
+    if not utils.has_hcp_retino_docker():
         print('** Skip HCP retinotopic atlas generation for now...')
         return
     subj_dir = path.realpath(subj_dir)
@@ -1167,6 +1195,13 @@ def create_vessel_mask_PDGRE(PD, GRE, out_file, PD_div_GRE=None, ath=300, rth=5,
     shutil.rmtree(temp_dir)
     all_finished(outputs)
     return outputs
+
+
+def clusterize(in_file, out_file, cluster_size, neighbor=2):
+    if out_file is None:
+        out_file = in_file
+    utils.run(f"3dclust -NN{neighbor} {cluster_size} \
+        -prefix {out_file} -overwrite {in_file}")
 
 
 def scale(in_file, out_file, mask_file=None, dtype=None):
@@ -1582,9 +1617,13 @@ class ANTsTransform(Transform):
         return self._apply_transform_to_xyz(xyz, convention=convention, transform='inverse')
 
 
-def align_anat(base_file, in_file, out_file, strip=None, N4=None, init_shift=None, init_rotate=None, 
+def align_anat(base_file, in_file, out_file, strip=None, N4=None, init_shift=None, init_rotate=None, init_xform=None,
     method=None, cost=None, n_params=None, interp=None, max_rotate=None, max_shift=None, 
     emask=None, save_weight=None):
+    '''
+    emask : fname
+        Mask to exclude from analysis.
+    '''
     def parse_cost(output):
         pattern = re.compile(r'\+\+ allcost output: final fine #0')
         k = 0
@@ -1673,9 +1712,11 @@ def align_anat(base_file, in_file, out_file, strip=None, N4=None, init_shift=Non
     # Apply initial (manual) alignment and extract the parameters
     transforms = []
     if init_rotate is not None:
-        init_mat = nudge_cmd2mat(init_rotate, f"{temp_dir}/in_ns.nii")
-        init_xform = f"{temp_dir}/init.aff12.1D"
-        io.write_affine(init_xform, init_mat)
+        if init_rotate:
+            init_mat = nudge_cmd2mat(init_rotate, f"{temp_dir}/in_ns.nii")
+            init_xform = f"{temp_dir}/init.aff12.1D"
+            io.write_affine(init_xform, init_mat)
+    if init_xform is not None:
         apply_transforms(init_xform, f"{temp_dir}/base_ns.nii",
             f"{temp_dir}/in_ns.nii", f"{temp_dir}/in_ns.nii")
         transforms.insert(0, init_xform)
@@ -1708,7 +1749,7 @@ def align_S2E(base_file, suma_dir, out_file=None, **kwargs):
         out_dir, prefix, ext = afni.split_out_file(base_file, split_path=True, trailing_slash=True)
         out_file = f"{out_dir}SurfVol_Alnd_Exp{ext}"
     out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True, trailing_slash=True)
-    outputs = align_anat(base_file, surf_vol, out_file)
+    outputs = align_anat(base_file, surf_vol, out_file, **kwargs)
     outputs['script_file'] = f"{out_dir}run_suma"
     spec_file = path.relpath(afni.get_suma_spec(suma_dir)['both'], out_dir)
     create_suma_script(spec_file, path.split(out_file)[1], outputs['script_file'])
@@ -1834,7 +1875,8 @@ def detrend(motion_file, in_file, out_file, censor=True, motion_th=0.3, censor_f
 
 
 def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick_runs=None,
-    motion_files=None, censor=True, motion_th=0.3, censor_files=None, regressor_files=None, poly=None,
+    motion_files=None, censor=True, motion_th=0.3, censor_files=None, 
+    regressor_file=None, poly=None,
     fitts=True, errts=True, REML=True, perblock=False, FDR=None):
     '''
     Parameters
@@ -1957,6 +1999,19 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
     else:
         motion_cmds = []
     censor_cmd = f"-censor {outputs['censor_file']}" if censor else ''
+    # Other direct (non-HRF-convolved) regressors
+    # TODO: Refactor this code
+    # TODO: Check the compatibility of this code with varioius selection, etc.
+    regressor_cmds = []
+    if regressor_file is not None:
+        X = np.loadtxt(regressor_file, ndmin=2)
+        all_zero_cols = ~np.any(X, axis=0) 
+        regressor_labels = [f'regressor{k+1:02d}' for k in range(X.shape[1])]
+        for k, regressor_label in enumerate(regressor_labels):
+            if not all_zero_cols[k]: # Exclude all-zero columns from regressors
+                total_regressors += 1
+                regressor_cmds.append(f"-stim_file {total_regressors} {regressor_file}'[{k}]' \
+                    -stim_label {total_regressors} {regressor_label}")
     # Prepare model
     stim_cmds = []
     IRF_labels = []
@@ -2009,7 +2064,7 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
     utils.run(f"3dDeconvolve -force_TR {TR} -TR_times {TR} -local_times \
         -input {' '.join(in_files)} {censor_cmd} \
         -polort {'A' if poly is None else str(poly)} \
-        -num_stimts {total_regressors} {' '.join(motion_cmds)} {' '.join(stim_cmds)} \
+        -num_stimts {total_regressors} {' '.join(motion_cmds)} {' '.join(regressor_cmds)} {' '.join(stim_cmds)} \
         {' '.join(contrast_cmds) if contrasts is not None else ''} \
         -xjpeg {outputs['X_image']} -x1D {outputs['X_file']} -x1D_uncensored {outputs['X_nocensor']} \
         -tout -bucket {temp_dir}/stats {' '.join(IRF_cmds)} \
@@ -2018,7 +2073,7 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
         {'-x1D_stop' if REML else ''} -jobs {DEFAULT_JOBS} -overwrite", error_pattern=r'^\*{2}\w')
         
     if REML:
-        utils.run(f"tcsh {temp_dir}/stats.REML_cmd")
+        utils.run(f"tcsh {temp_dir}/stats.REML_cmd", error_pattern=r'^\*{2}\w')
         copy_dset(f"{temp_dir}/stats_REMLvar{default_ext}", outputs['stats_var'])
         for k, IRF_label in enumerate(IRF_labels):
             utils.run(f"3dTcat -tr {TR} -prefix {outputs[IRF_label]} -overwrite \
@@ -2035,6 +2090,21 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
     shutil.rmtree(temp_dir)
     all_finished(outputs)
     return outputs
+
+
+def collect_perblock_stats(mask_file, stats_file, n_conditions, n_repeats, n_runs=None, n_stats=2, stat_index=0, skip_first=1):   
+    sel = slice(skip_first, skip_first+stat_index+n_conditions*n_repeats*n_stats, n_stats)
+    labels = afni.get_brick_labels(stats_file)[sel]
+    mask = io.Mask(mask_file)
+    X = mask.dump(stats_file)[:,sel].T
+    y = np.repeat(np.arange(n_conditions), n_repeats)
+    if n_runs is not None:
+        groups = np.tile(np.repeat(np.arange(n_runs), n_repeats/n_runs), n_conditions)
+    else:
+        groups = None
+    # Sanity check
+    assert(len(set((yy, label.split('#')[0]) for yy, label in zip(y, labels)))) # y is consistent with labels
+    return X, y, groups, labels
 
 
 def copy_dset(in_file, out_file):

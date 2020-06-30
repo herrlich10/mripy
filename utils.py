@@ -31,8 +31,12 @@ def has_N4():
 
 
 def has_hcp_retino_docker():
-    pass
-
+    try:
+        run(f"docker image list", goal_pattern='nben/neuropythy')
+        return True
+    except RuntimeError:
+        print('>> Please check whether docker desktop is running.')
+        return False
 
 
 # Command line syntactic sugar

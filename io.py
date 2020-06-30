@@ -719,6 +719,11 @@ def read_txt(fname, dtype=float, comment='#', delimiter=None, skiprows=0, nrows=
         return x
 
 
+def read_stim(fname):
+    with open(fname) as fi:
+        return [np.array([]) if line[0] == '*' else np.float_(line.split()) for line in fi if line.strip()]
+
+
 # ========== NIFTI ==========
 def read_nii(fname, return_img=False):
     if fname[-4:] != '.nii' and fname[-7:] != '.nii.gz':
@@ -1255,6 +1260,19 @@ class Mask(object):
         mask.index = np.arange(np.prod(mask.IJK))[idx]
         return mask
 
+    @classmethod
+    def from_files(cls, files, combine='union'):
+        mask = cls(files[0])
+        mask.value[:] = 1
+        for k in range(1, len(files)):
+            mask2 = cls(files[k])
+            mask2.value[:] = 2**k
+            if combine == 'union':
+                mask = mask + mask2
+            elif combine == 'intersect':
+                mask = mask * mask2
+        return mask
+
     def compatible(self, other):
         return np.all(self.IJK==other.IJK) and np.allclose(self.MAT, other.MAT)
 
@@ -1266,6 +1284,13 @@ class Mask(object):
         assert(self.compatible(other))
         mask = copy.deepcopy(self)
         mask.index = np.union1d(self.index, other.index)
+        value_dict = {idx: val for idx, val in zip(self.index, self.value)}
+        for idx, val in zip(other.index, other.value):
+            if idx in value_dict:
+                value_dict[idx] += val
+            else:
+                value_dict[idx] = val
+        mask.value = np.array([value_dict[idx] for idx in mask.index])
         return mask
 
     def __mul__(self, other):
@@ -1347,7 +1372,7 @@ class Mask(object):
         # return np.vstack(read_afni(f).T.flat[self.index] for f in files).T.squeeze() # Cannot handle 4D...
         data = []
         for f in files:
-            if f.endswith('.nii'):
+            if f.endswith('.nii') or f.endswith('.nii.gz'):
                 vol = read_nii(f)
             else:
                 vol = read_afni(f)

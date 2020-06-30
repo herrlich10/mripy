@@ -5,6 +5,7 @@ import sys, os, re, shlex, shutil, glob, subprocess, collections
 from os import path
 from datetime import datetime
 import numpy as np
+from scipy import interpolate
 import matplotlib as mpl
 from . import six
 
@@ -111,7 +112,7 @@ def split_out_file(out_file, split_path=False, trailing_slash=False):
     out_dir, out_name = path.split(out_file)
     if trailing_slash and out_dir:
         out_dir += '/'
-    match = re.match(r'(.+)(.nii|.nii.gz|.1D|.1D.dset|.1D.roi|.niml.dset|.niml.roi|.csv)$', out_name)
+    match = re.match(r'(.+)(.nii|.nii.gz|.1D|.1D.dset|.1D.roi|.niml.dset|.niml.roi|.gii.dset|.csv)$', out_name)
     if match:
         prefix, ext = match.groups()
     else:
@@ -500,7 +501,7 @@ def update_afnirc(**kwargs):
         fout.write('\n'.join(updated))
 
 
-def add_colormap(cmap, name=None, cyclic=False, index=None):
+def add_colormap(cmap, name=None, cyclic=False, index=None, categorical=False):
     '''
     cmap : list of RGB colors | matplotlib.colors.LinearSegmentedColormap
     '''
@@ -523,11 +524,41 @@ def add_colormap(cmap, name=None, cyclic=False, index=None):
         fout.writelines(['\t'.join(map(str, color))+'\n' for color in cmap])
     cmap_file = path.join(cmap_dir, '{0}.pal'.format(name))
     with open(cmap_file, 'w') as fout:
-        subprocess.check_call(['MakeColorMap', '-f', temp_file, '-ah', name] +
-            (['-nc', str(128), '-sl'] if cyclic else ['-nc', str(129)]), stdout=fout)
+        if categorical:
+            subprocess.check_call(['MakeColorMap', '-f', temp_file, '-ah', name, '-nc', str(len(cmap))], stdout=fout)
+        else:
+            subprocess.check_call(['MakeColorMap', '-f', temp_file, '-ah', name] +
+                (['-nc', str(128), '-sl'] if cyclic else ['-nc', str(129)]), stdout=fout)
     os.remove(temp_file)
     # Update .afnirc
     update_afnirc(**{'AFNI_COLORSCALE_{0:02d}'.format(index): path.relpath(cmap_file, path.expanduser('~'))})
+
+
+def write_colorscale_file(fname, pal_name, colors, locations=None, interp=None):
+    '''
+    Parameters
+    ----------
+    fname : *.pal file name
+    pal_name : palette name (or title)
+    colors : a list of RGB colors within [0,1]
+        first color (bottom) -> last color (top)
+    locations : locations of the breakpoints where colors are defined
+        0 (bottom) -> 1 (top)
+    interp : 'linear'|'nearest'
+
+    AFNI document says "There are exactly 128 color locations on an AFNI colorscale."
+    For details, see https://afni.nimh.nih.gov/pub/dist/doc/OLD/afni_colorscale.html
+    But in fact, if you fill the colorscale file with a lot of colors, only the first 256 colors will be used.
+    '''
+    if locations is None:
+        locations = np.linspace(0, 1, len(colors))
+    if interp is None:
+        interp = 'linear'
+    cmap = interpolate.interp1d(locations, colors, kind=interp, axis=0, bounds_error=False, fill_value='extrapolate')
+    clist = [mpl.colors.to_hex(color) for color in cmap(np.linspace(0, 1, 256))]
+    with open(fname, 'w') as fout:
+        fout.write(f"{pal_name}\n")
+        fout.writelines([f"{color}\n" for color in reversed(clist)])
 
 
 def parse_patch(patch):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import copy
+import copy, warnings
 from os import path
 from collections import OrderedDict
 import itertools
@@ -11,6 +11,68 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from . import six, afni, io, utils, dicom, math
+
+
+def convolve_HRF(starts, lens, TR=2, scan_time=None, HRF=None):
+    if np.isscalar(lens):
+        lens = lens * np.ones(len(starts))
+    numout_cmd = '' if scan_time is None else f"-numout {np.ceil(scan_time/TR)}"
+    HRF_cmd = '-GAM' if HRF is None else HRF
+    res = utils.run(f"waver -TR {TR} {numout_cmd} {HRF_cmd} -tstim {' '.join([f'{t}%{l}' for t, l in zip(starts, lens)])}", verbose=0)
+    return np.float_(res['output'])
+
+
+def create_ideal(stimuli, lens, **kwargs):
+    '''
+    Parameters
+    ----------
+    stimuli : list of fname
+    '''
+    starts = [io.read_stim(fname) for fname in stimuli]
+    n_stims = len(starts)
+    n_runs = len(starts[0])
+    assert(np.all(np.array([len(runs) for runs in starts]) == n_runs))
+    if lens == 'alterating':
+        lens = [[[] for run in range(n_runs)] for stim in range(n_stims)]
+        for run in range(n_runs):
+            curr_state, curr_time = -1, np.nan
+            n_events = np.array([len(starts[stim][run]) for stim in range(n_stims)])
+            ids = np.zeros(n_stims, dtype=int)
+            while np.any(ids < n_events):
+                wavefront = [(starts[stim][run][ids[stim]] if ids[stim] < n_events[stim] else np.inf) for stim in range(n_stims)]
+                next_state, next_time = np.argmin(wavefront), np.min(wavefront)
+                if next_state != curr_state:
+                    if curr_state != -1:
+                        lens[curr_state][run].append(next_time - curr_time)
+                    curr_state, curr_time = next_state, next_time
+                ids[curr_state] += 1
+    elif np.isscalar(lens):
+        lens = [[[lens]*len(starts[stim][run]) for run in range(n_runs)] for stim in range(n_stims)]
+    ideal = [[convolve_HRF(starts[stim][run], lens[stim][run], **kwargs) for run in range(n_runs)] for stim in range(n_stims)]
+    return ideal
+
+
+def create_times(tmin, tmax, dt):
+    if tmin < 0 and tmax > 0:
+        times = np.r_[np.arange(-dt, tmin-dt/2, -dt)[::-1], np.arange(0, tmax+dt/2, dt)]
+    else:
+        times = np.arange(tmin, tmax+dt/2, dt)
+    return times
+
+
+def create_ERP(t, x, events, tmin=-8, tmax=16, dt=0.1, baseline=[-2,0], interp='linear'):
+    '''
+    t : time for each data point (can be non-contiguous)
+    x : [event, feature, time]
+    events : event onset time (can be on non-integer time point)
+    '''
+    times = create_times(tmin, tmax, dt)
+    f = interpolate.interp1d(t, x, axis=-1, kind=interp, fill_value=np.nan, bounds_error=False)
+    base_corr = create_base_corr_func(times, baseline=baseline)
+    ERP = np.zeros(np.r_[len(events), x.shape[1:-1], len(times)].astype(int), dtype=x.dtype)
+    for k, t in enumerate(events):
+        ERP[k] = base_corr(f(np.arange(t+tmin, t+tmax+dt/2, dt)))
+    return ERP, times
 
 
 class Attributes(object):
@@ -137,7 +199,8 @@ class Raw(utils.Savable, object):
         return self
         
     def __repr__(self):
-        return f"<Raw  | {self.n_features} {self.info['feature_name']}s, {self.times[0]:.3f} - {self.times[-1]:.3f} sec, TR = {self.TR} sec, {self.n_times} TRs>"
+        # return f"<Raw  | {self.n_features} {self.info['feature_name']}s, {self.times[0]:.3f} - {self.times[-1]:.3f} sec, TR = {self.TR} sec, {self.n_times} TRs>"
+        return f"<Raw  | {self.n_features} {self.info['feature_name']}s, {self.times[0]:.3f} - {self.times[-1]+self.TR:.3f} sec, TR = {self.TR} sec, {self.n_times} TRs>"
 
     def copy(self):
         return _copy(self)
@@ -262,7 +325,8 @@ def read_events(event_files):
 
     Returns
     -------
-    events : list of N-by-3 arrays
+    events : list of n_events-by-3 arrays
+        The three columns are [start_time(sec), reserved, event_id(int)]
     event_id : dict
     '''
     if not isinstance(event_files, dict):
@@ -351,7 +415,7 @@ class Epochs(utils.Savable, object):
             return # Skip __init__(), create an empty Epochs object, and manually initialize it later.
         self.events = events
         self.event_id = _default_event_id(events) if event_id is None else event_id
-        self.info = raw.info
+        self.info = raw.info.copy() # Caution: container datatype is assigned by reference by default
         self.info['sfreq'] = 1 / dt
         self.info['tmin'] = tmin
         self.info['tmax'] = tmax
@@ -362,7 +426,7 @@ class Epochs(utils.Savable, object):
             conditions = conditions.split('/')
         self.info['conditions'] = conditions
         self.info['condition'] = None
-        self.times = np.r_[np.arange(-dt, tmin-dt/2, -dt)[::-1], np.arange(0, tmax+dt/2, dt)] if tmin < 0 and tmax > 0 else np.arange(tmin, tmax+dt/2, dt)
+        self.times = create_times(tmin, tmax, dt)
         x = raw.data
         if hamm is not None:
             h = signal.hamming(hamm)
@@ -748,3 +812,6 @@ class Evoked(object):
 
 if __name__ == '__main__':
     pass
+    # stim_dir = '/Volumes/raid78/ccqian/LaminarRivalry2/LGN/S01/stimuli'
+    # stim_files = [f"{stim_dir}/L_replay.txt", f"{stim_dir}/R_replay.txt"]
+    # tc.create_ideal(stim_files, 'alterating')

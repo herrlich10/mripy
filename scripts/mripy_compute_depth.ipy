@@ -73,6 +73,7 @@ if __name__ == '__main__':
     parser.add_argument('-l', '--layers', nargs='+', default=['L14'], help='sub-laminae division schema ([L14]|L5)')
     parser.add_argument('-o', '-prefix', '--prefix', default=None, help='output prefix (default <base>.depth)')
     parser.add_argument('-j', '--jobs', type=int, default=4, help='number of parallel processes: [4]|8|12|...')
+    parser.add_argument('--identity', action='store_true', help='use identity matrix for S2E_mat')
     args = parser.parse_args()
     spec = afni.get_suma_info(args.suma)['spec']
     hemis = ['lh', 'rh']
@@ -248,7 +249,9 @@ if __name__ == '__main__':
             lock = multiprocessing.Lock()
             mask = io.Mask(args.base, kind='full')
             def compute_depth(prefix, inner, outer):
-                d = surface.compute_voxel_depth(mask.xyz, inner, outer, args.surf_vol, method=args.flavor, n_jobs=args.jobs, lock=lock)
+                S2E_mat = np.c_[np.eye(3), np.zeros(3)] if args.identity else args.surf_vol
+                d = surface.compute_voxel_depth(mask.xyz, inner, outer, S2E_mat, method=args.flavor, n_jobs=args.jobs, lock=lock)
+                # d = np.zeros(mask.xyz.shape[0]) # For quick test or debugging
                 d[(d<=-0.2)|(d>=1.2)] = 0
                 mask.undump(prefix, d)
             for hemi in hemis:

@@ -142,6 +142,31 @@ def interp_dset(fdset, fmesh, prefix):
     io.write_niml_bin_nodes(utils.fname_with_ext(prefix, '.niml.dset'), np.arange(new_val.shape[0]), new_val)
 
 
+def compute_faces_norm(verts, faces, F):
+    e01 = verts[F[:,1],:] - verts[F[:,0],:]
+    e12 = verts[F[:,2],:] - verts[F[:,1],:]
+    e01 /= np.linalg.norm(e01, axis=1, keepdims=True)
+    e12 /= np.linalg.norm(e12, axis=1, keepdims=True)
+    norms = np.cross(e01, e12, axis=1)
+    norms /= np.linalg.norm(norms, axis=1, keepdims=True)
+    return norms
+
+
+def surrouding_faces(verts, faces, v):
+    return faces[np.any(faces == v, axis=1),:]
+
+
+def compute_verts_norm(verts, faces, V):
+    norms = np.zeros([V.shape[0],3], dtype=verts.dtype)
+    for k, v in enumerate(V):
+        F = surrouding_faces(verts, faces, v)
+        n = compute_faces_norm(verts, faces, F)
+        n = np.sum(n, axis=0)
+        n /= np.linalg.norm(n)
+        norms[k,:] = n
+    return norms
+    
+
 def compute_verts_area(verts, faces, dtype=None):
     '''
     Compute element area for each vertex.
@@ -377,14 +402,18 @@ class Surface(object):
     def _get_surf2exp_transform(self, exp_anat):
         pass
 
-    def _get_spherical_coordinates(self, hemi):
-        verts = io.read_surf_mesh(path.join(self.suma_dir, '{hemi}.sphere.reg.asc'.format(hemi=hemi)))[0]
-        theta = np.arccos(verts[:,2]/100) # Polar (inclination) angle, [0,pi]
+    def _get_spherical_coordinates(self, hemi, symmetric=True):
+        verts = io.read_surf_mesh(path.join(self.suma_dir, f"{hemi}.sphere.reg{self.surf_ext}"))[0]
+        # verts[:,2] sometimes can be greater than 100 or less than -100
+        theta = np.arccos(np.maximum(np.minimum(verts[:,2], 100), -100)/100) # Polar (inclination) angle, [0,pi] 
         phi = np.arctan2(verts[:,1], verts[:,0]) # Azimuth angle, (-pi,pi]
+        if symmetric and hemi == 'rh':
+            phi = -phi + np.pi
+            phi[phi>np.pi] -= 2*np.pi
         return theta, phi
 
-    def to_1D_dset(self, prefix, node_values, hemi):
-        np.savetxt('{0}.{1}.1D.dset'.format(prefix, hemi), np.c_[np.arange(len(node_values)), node_values])
+    def to_1D_dset(self, prefix, node_values):
+        np.savetxt(f"{prefix}.1D.dset", np.c_[np.arange(len(node_values)), node_values], fmt='%.6f')
 
     def vol2surf(self, in_file, out_file, func='median', depth_range=[0,1], mask_file=None, truncate=True):
         '''
@@ -445,7 +474,7 @@ class Surface(object):
         func : str
             ave, median, mask2, count, etc.
         combine : str
-            l+r, max(l,r), consistent, etc.
+            l+r, max(l,r), consistent, mean, lh, rh, etc.
         mask_file : str
             Volume mask file.
 
@@ -471,6 +500,7 @@ class Surface(object):
                 -grid_parent {base_file} \
                 {input_cmd} {mask_cmd} \
                 -map_func {func} \
+                -datum float \
                 -f_steps 20 -f_index nodes \
                 -f_p1_fr {depth_range[0]} -f_pn_fr {depth_range[1]-1} \
                 -prefix {temp_dir}/{hemi}.nii -overwrite", 
@@ -478,12 +508,17 @@ class Surface(object):
         pc.wait()
         if len(in_files) > 1:
             if combine == 'consistent':
-                pc.run1(f"3dcalc -l {temp_dir}/lh.nii -r {temp_dir}/rh.nii \
-                    -expr 'notzero(l)*iszero(r)*l+iszero(l)*notzero(r)*r+notzero(l)*notzero(r)*equals(l,r)*l' \
-                    -prefix {out_file} -overwrite")
+                combine_expr = 'notzero(l)*iszero(r)*l+iszero(l)*notzero(r)*r+notzero(l)*notzero(r)*equals(l,r)*l'
+            elif combine == 'mean':
+                combine_expr = 'notzero(l)*iszero(r)*l+iszero(l)*notzero(r)*r+notzero(l)*notzero(r)*(l+r)/2'
+            elif combine == 'lh':
+                combine_expr = 'l+iszero(l)*notzero(r)*r'
+            elif combine == 'rh':
+                combine_expr = 'r+iszero(r)*notzero(l)*l'
             else:
-                pc.run1(f"3dcalc -l {temp_dir}/lh.nii -r {temp_dir}/rh.nii \
-                    -expr '{combine}' -prefix {out_file} -overwrite")
+                combine_expr = combine
+            pc.run1(f"3dcalc -l {temp_dir}/lh.nii -r {temp_dir}/rh.nii \
+                -expr '{combine_expr}' -prefix {out_file} -overwrite")
         else:
             pc.run1(f"3dcopy {temp_dir}/{hemi}.nii {out_file} -overwrite")
         shutil.rmtree(temp_dir)

@@ -5,10 +5,10 @@ import time
 import numpy as np
 from scipy import optimize, stats
 from deepdish import io as dio
-from . import six, utils, math
+from . import utils, math
 
 
-def basis_vanBergen2015(s, n_channels=8):
+def basis_vanBergen2015(s, n_channels=8, power=5):
     '''
     Parameters
     ----------
@@ -23,11 +23,11 @@ def basis_vanBergen2015(s, n_channels=8):
     {van Bergen2015}
     '''
     phi = np.arange(0, np.pi, np.pi/n_channels)
-    fs = np.maximum(0, np.cos(2 * (s[np.newaxis,:] - phi[:,np.newaxis]))) # n_channels * n_trials
+    fs = np.maximum(0, np.cos(2 * (s[np.newaxis,:] - phi[:,np.newaxis])))**power # n_channels * n_trials
     return fs
 
 
-def basis_Sprague2013(s, n_channels=6, spacing=2, size=None, power=7, dim=1, intercept=False):
+def basis_Sprague2013(s, n_channels=6, spacing=2, center=None, size=None, power=7, dim=1, intercept=False):
     '''
     Parameters
     ----------
@@ -43,14 +43,16 @@ def basis_Sprague2013(s, n_channels=6, spacing=2, size=None, power=7, dim=1, int
     '''
     if size is None:
         size = 5.8153/2.0940 * spacing # Ratio is chosen to avoid high corr between channels while accomplish smooth recon
-    center = (np.arange(n_channels) - (n_channels-1)/2) * spacing
+    if center is None:
+        center = 0
+    centers = (np.arange(n_channels) - (n_channels-1)/2) * spacing + center
     if dim == 1:
-        r = np.abs(s[np.newaxis,:] - center[:,np.newaxis]) # Distance from filter’s center
+        r = np.abs(s[np.newaxis,:] - centers[:,np.newaxis]) # Distance from filter’s center
     elif dim == 2:
-        X, Y = np.meshgrid(center, center)
-        center = np.c_[X.ravel(), Y.ravel()] # 2D channel array is serialized in row-first order
-        r = np.linalg.norm(s.T[np.newaxis,...] - center[...,np.newaxis], axis=1)
-    fs = np.where(r<size, (0.5*np.cos(r/size*np.pi) + 0.5)**7, 0) # n_channels * n_trials
+        X, Y = np.meshgrid(centers, centers)
+        centers = np.c_[X.ravel(), Y.ravel()] # 2D channel array is serialized in row-first order
+        r = np.linalg.norm(s.T[np.newaxis,...] - centers[...,np.newaxis], axis=1)
+    fs = np.where(r<size, (0.5*np.cos(r/size*np.pi) + 0.5)**power, 0) # n_channels * n_trials
     if intercept:
         fs = np.vstack([fs, np.ones(len(s))]) # Learnable bias
     return fs
@@ -76,7 +78,7 @@ class BaseModel(utils.Savable2):
 
 
 class ChannelEncodingModel(BaseModel):
-    def __init__(self, n_channels, basis_func, stimulus_domain, circular=False):
+    def __init__(self, n_channels, basis_func, stimulus_domain, circular=False, verbose=2):
         '''
         After (Brouwer et al., 2009).
         '''
@@ -84,6 +86,7 @@ class ChannelEncodingModel(BaseModel):
         self.basis_func = basis_func
         self.stimulus_domain = stimulus_domain
         self.circular = circular
+        self.verbose = verbose
 
     # get_params() is required by sklearn
     def get_params(self, deep=True):
@@ -104,7 +107,7 @@ class ChannelEncodingModel(BaseModel):
         s = y # Stimulus, n_trials
         fs = self.basis_func(s) # Channel response, n_channels * n_trials
         # Step 1: Estimate W by OLS regression
-        W = b @ fs.T @ np.linalg.pinv(fs @ fs.T) # Weight, n_voxels * n_channels
+        W = b @ fs.T @ math.pinv(fs @ fs.T) # Weight, n_voxels * n_channels
         # Store params
         self.W_ = W
         return self # Required by sklearn
@@ -139,7 +142,7 @@ class ChannelEncodingModel(BaseModel):
             Ws = []
             BICs = []
             for lambda_ in np.logspace(-3, 3, 19):
-                M = fs.T @ np.linalg.pinv(fs @ fs.T + lambda_ * np.eye(self.n_channels)) # n_trials * n_channels
+                M = fs.T @ math.pinv(fs @ fs.T + lambda_ * np.eye(self.n_channels)) # n_trials * n_channels
                 W = b @ M # Weight, n_voxels * n_channels
                 H = M @ fs # Projection (or "hat") matrix, n_trials * n_trials
                 df = np.trace(H) # Degrees of freedom for ridge (less than the number of predictors as in OLS)
@@ -153,7 +156,7 @@ class ChannelEncodingModel(BaseModel):
         
     def inverted_encoding(self, X):
         b = X.T # Voxel BOLD response, n_voxels * n_trials
-        fs = np.linalg.pinv(self.W_.T @ self.W_) @ self.W_.T @ b # Inverted channel response, n_channels * n_trials
+        fs = math.pinv(self.W_.T @ self.W_) @ self.W_.T @ b # Inverted channel response, n_channels * n_trials
         return fs.T # n_trials * n_channels
 
     def voxel_inversion(self, X, stimulus_domain=None):
@@ -185,9 +188,23 @@ class ChannelEncodingModel(BaseModel):
 
 
 class BayesianChannelModel(BaseModel):
-    def __init__(self, n_channels='required', basis_func='required', stimulus_domain='required', circular=False, stimulus_prior=None, global_search=False):
+    def __init__(self, n_channels='required', basis_func='required', stimulus_domain='required', circular=False, stimulus_prior=None, global_search=False, verbose=2):
         '''
         After (van Bergen et al., 2015).
+
+        Examples
+        --------
+        from mripy import encoding
+        from sklearn import model_selection, preprocessing, pipeline
+
+        stimulus_domain = np.linspace(0, pi, 181)
+        n_channels = 8
+        basis_func = lambda s: encoding.basis_vanBergen2015(s, n_channels=n_channels)
+        model = encoding.BayesianChannelModel(n_channels=n_channels, 
+            basis_func=basis_func, stimulus_domain=stimulus_domain, circular=True)
+        model = pipeline.make_pipeline(preprocessing.StandardScaler(), model)
+        cv = model_selection.LeaveOneGroupOut() # One group of each run
+        y_hat = model_selection.cross_val_predict(model, X, y, groups, cv=cv, n_jobs=1)
         '''
         self.n_channels = n_channels
         self.basis_func = basis_func
@@ -195,6 +212,7 @@ class BayesianChannelModel(BaseModel):
         self.circular = circular
         self.stimulus_prior = 1 if stimulus_prior is None else stimulus_prior # TODO: This should be refactored for CV
         self.global_search = global_search
+        self.verbose = verbose
 
     # get_params() is required by sklearn
     def get_params(self, deep=True):
@@ -223,7 +241,7 @@ class BayesianChannelModel(BaseModel):
         #    and non positive semidefinite `Omega` (i.e., `all(eigvals(Omega)>0) == False`), 
         #    which could occur with randn W
         # Note that Gilles used `np.linalg.lstsq()` here, which should be numerically adept.
-        W = b @ fs.T @ np.linalg.pinv(fs @ fs.T) # Weight, n_voxels * n_channels
+        W = b @ fs.T @ math.pinv(fs @ fs.T) # Weight, n_voxels * n_channels
         # Store params
         self.W_ = W
         # Step 2: Estimate tau, rho, sigma by ML optimization (gradient-based)
@@ -236,7 +254,8 @@ class BayesianChannelModel(BaseModel):
         # bounds = np.c_[np.ones(len(params0))*1e-4, np.r_[tau0*5, 1, sigma0*5]]
         bounds = np.c_[np.ones(len(params0))*1e-3, np.r_[tau0*5, 0.99, sigma0*5]]
         # Conjugate gradient algorithm, due to lack of support for bounds, requires multi-start to avoid/alleviate being trapped in local minima.
-        print('>> Start maximum likelihood optimization...')
+        if self.verbose > 0:
+            print('>> Start maximum likelihood optimization...')
         if self.global_search:
             def accept_test(f_new, x_new, f_old, x_old):
                 Omega = self._calc_Omega(self.W_, x_new[:-2], x_new[-2], x_new[-1])
@@ -259,24 +278,28 @@ class BayesianChannelModel(BaseModel):
                     curr_time = time.time()
                     duration = curr_time - self.last_time
                     self.last_time = curr_time
-                    # print(f"iter#{self.count:03d} ({utils.format_duration(duration)}): cost={cost:.4f}, tau[-3:]={xk[-5:-2]}, rho={xk[-2]:.4f}, sigma={xk[-1]:.4f}")
-                    print(f"iter#{self.count:03d} ({utils.format_duration(duration)}): tau[-3:]={xk[-5:-2]}, rho={xk[-2]:.4f}, sigma={xk[-1]:.4f}")
+                    if self.model.verbose > 1:
+                        # print(f"iter#{self.count:03d} ({utils.format_duration(duration)}): cost={cost:.4f}, tau[-3:]={xk[-5:-2]}, rho={xk[-2]:.4f}, sigma={xk[-1]:.4f}")
+                        print(f"iter#{self.count:03d} ({utils.format_duration(duration)}): tau[-3:]={xk[-5:-2]}, rho={xk[-2]:.4f}, sigma={xk[-1]:.4f}")
+                    elif self.model.verbose == 1:
+                        print(f"iter#{self.count:03d} ({utils.format_duration(duration)}): tau[-3:]={xk[-5:-2]}, rho={xk[-2]:.4f}, sigma={xk[-1]:.4f}", end='\r')
             # res = optimize.minimize(self._negloglikelihood, params0, args=(z, W), method='L-BFGS-B', 
             #     jac=self._negloglikelihood_prime, bounds=bounds, callback=Counter(model=self, args=(z, W)).step)
             res = optimize.minimize(self._negloglikelihood, params0, args=(z, W, True), method='L-BFGS-B', 
                 jac=True, bounds=bounds, callback=Counter(model=self, args=(z, W)).step)
         params = res.x
-        print(f"cost={res.fun}, iter={res.nit}, func_eval={res.nfev}, success={res.success}, {res.message}")
-        print(params0[-3:], '-->', params[-3:])
+        if self.verbose > 0:
+            print(f"cost={res.fun}, iter={res.nit}, func_eval={res.nfev}, success={res.success}, {res.message}")
+            print(params0[-3:], '-->', params[-3:])
         # Store params
         self.tau_, self.rho_, self.sigma_ = params[:-2], params[-2], params[-1]
         self._Omega = self._calc_Omega(self.W_, self.tau_, self.rho_, self.sigma_)
-        self._Omega_inv = np.linalg.pinv(self.Omega_) # Update cache
+        self._Omega_inv = math.pinv(self.Omega_) # Update cache
         return self # Required by sklearn
 
     # Cache backed properties (the "if else" construct is to prevent unnecessary expression evaluation)
     Omega_ = property(lambda self: self.__dict__.setdefault('_Omega', None if hasattr(self, '_Omega') else self._calc_Omega(self.W_, self.tau_, self.rho_, self.sigma_)))
-    Omega_inv_ = property(lambda self: self.__dict__.setdefault('_Omega_inv', None if hasattr(self, '_Omega_inv') else np.linalg.pinv(self.Omega_)))
+    Omega_inv_ = property(lambda self: self.__dict__.setdefault('_Omega_inv', None if hasattr(self, '_Omega_inv') else math.pinv(self.Omega_)))
 
     def predict(self, X, stimulus_domain=None, stimulus_prior=None, return_all=False):
         stimulus_domain = self.stimulus_domain if stimulus_domain is None else stimulus_domain
@@ -342,7 +365,7 @@ class BayesianChannelModel(BaseModel):
             return -self._calc_L(z, W, tau, rho, sigma)
         else:
             Omega = self._calc_Omega(W, tau, rho, sigma)
-            Omega_inv = np.linalg.pinv(Omega)
+            Omega_inv = math.pinv(Omega) # np.linalg.pinv() may encounter "LinAlgError: SVD did not converge" for some matrices
             L = -self._calc_L(z, W, tau, rho, sigma, Omega=Omega, Omega_inv=Omega_inv)
             L_prime = self._negloglikelihood_prime(params, z, W, Omega=Omega, Omega_inv=Omega_inv)
             return L, L_prime
@@ -390,7 +413,7 @@ class BayesianChannelModel(BaseModel):
         z = b - W @ fs
         '''
         Omega = self._calc_Omega(W, tau, rho, sigma) if Omega is None else Omega
-        M = np.linalg.pinv(Omega) if Omega_inv is None else Omega_inv # Although (4x) slower than inv, pinv is preferred in the numerical world (=inv if invertible and well conditioned)
+        M = math.pinv(Omega) if Omega_inv is None else Omega_inv # Although (4x) slower than inv, pinv is preferred in the numerical world (=inv if invertible and well conditioned)
         n_voxels, n_trials = z.shape
         # For a single sample: -0.5 * (z.T @ M @ z + np.log(np.linalg.det(Omega)) + n_voxels*np.log(2*np.pi))
         # May also use (by Gilles): np.sum(stats.multivariate_normal(np.zeros(n_voxels), Omega).logpdf(z.T))
@@ -399,7 +422,7 @@ class BayesianChannelModel(BaseModel):
         return -0.5 * ((z * (M @ z)).sum() + n_trials*np.prod(np.linalg.slogdet(Omega)) + n_trials*n_voxels*np.log(2*np.pi))
         
     def _dL_dOmega(self, z, Omega, chain=False, Omega_inv=None):
-        M = np.linalg.pinv(Omega) if Omega_inv is None else Omega_inv # Although (4x) slower than inv, pinv is preferred in the numerical world (=inv if invertible and well conditioned)
+        M = math.pinv(Omega) if Omega_inv is None else Omega_inv # Although (4x) slower than inv, pinv is preferred in the numerical world (=inv if invertible and well conditioned)
         n_voxels, n_trials = z.shape
         # deriv = 0.5 * (M.T @ np.outer(z, z) @ M.T - M.T)
         # For a single sample: deriv = 0.5 * (M @ np.outer(z, z) @ M - M) # M.T == M
@@ -491,6 +514,64 @@ class EnsembleModel(BaseModel):
         d['models_'] = [self.base_model.__class__(**self.base_model.get_params()).from_dict(model) for model in d['models_']]
         self.__dict__.update(d)
         return self
+
+
+def shift_distribution(d, stimulus_domain, center_on=None, circular=True):
+    '''
+    Parameters
+    ----------
+    d : n_trials * n_domain
+    '''
+    if center_on is not None:
+        tgt_idx = len(stimulus_domain)//2
+        src_idx = np.argmin(np.abs(center_on[:,np.newaxis] - stimulus_domain[np.newaxis,:]), axis=-1)
+        shift_idx = tgt_idx - src_idx
+    shifted = np.zeros_like(d)
+    for k, dd in enumerate(d):
+        dd = np.roll(dd, shift_idx[k])
+        if not circular:
+            if shift_idx[k] >= 0:
+                dd[:shift_idx[k]] = np.nan
+            else:
+                dd[shift_idx[k]:] = np.nan
+        shifted[k,:] = dd
+    return shifted
+
+
+def discretize_prediction(y_pred, targets, circular_domain=None):
+    '''
+    Discretize continous prediction to the nearest target.
+    Can handle irregular target grid and also circular domain.
+
+    E.g.,
+    y_pred = encoding.discretize_prediction(y_hat, arange(8)/8*pi, circular_domain=[0, pi])
+    correct = encoding.circular_correct(y_true, y_hat, domain=[0, pi], n_targets=8)
+    assert(allclose(mean(y_pred==y_true), mean(correct)))
+    '''
+    if circular_domain: # Circular domain
+        D = circular_domain[-1] - circular_domain[0] # Domain size
+        augmented = np.r_[targets, D+targets[0]]
+    else: # Non circular domain
+        augmented = targets
+    idx = np.argmin(np.abs(y_pred[:,np.newaxis] - augmented[np.newaxis,:]), axis=-1) % len(targets)
+    return targets[idx]
+
+
+def circular_correct(y_true, y_pred, domain=None, n_targets=None, tolerance=None, return_dist=False):
+    if domain is None:
+        domain = [0, 2*np.pi]
+    D = domain[-1] - domain[0] # Domain size
+    if n_targets is None:
+        if tolerance is None:
+            raise ValueError('You must provide either "n_targets" or "tolerance".')
+        else:
+            d = tolerance
+    else:
+        d = D / n_targets / 2
+    dist = np.abs(y_pred - y_true)
+    dist = np.minimum(dist, D-dist)
+    correct = (dist < d)
+    return (correct, dist) if return_dist else correct
 
 
 if __name__ == '__main__':
