@@ -44,9 +44,10 @@ def quadruple_mesh(verts, faces, power=1, mask=None, values=[]):
                 nv.append((verts[n1]+verts[n2])/2)
             return n_idx
         for f in faces:
-            if mask is None or set(f).isdisjoint(mask):
+            if mask is not None and set(f).isdisjoint(mask):
+                # Skip dividing this face
                 nf.append(f)
-            else:
+            else: # Divide this face into four new faces
                 nv0 = get_new_vert(f[1], f[2])
                 nv1 = get_new_vert(f[2], f[0])
                 nv2 = get_new_vert(f[0], f[1])
