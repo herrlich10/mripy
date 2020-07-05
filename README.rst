@@ -8,6 +8,8 @@ a set of command line tools. It is a useful augmentation to the AFNI tool chain.
 Installation (in linux/mac)
 ===========================
 
-```
-$ pip install mripy
-```
+Coming soon...
+
+.. code-block:: shell
+
+    $ pip install mripy

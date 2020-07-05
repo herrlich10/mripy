@@ -407,7 +407,8 @@ class PooledCaller(object):
             # Dequeuing, see https://stackoverflow.com/questions/10028809/maximum-size-for-multiprocessing-queue-item
             self._async_get_res(ress)
         # Handle return values by callable cmd
-        self._async_get_res(ress)
+        while not self.res_queue.empty():
+            self._async_get_res(ress)
         ress = [res[1] for res in sorted(ress, key=lambda res: res[0])]
         # Handle return codes by children processes
         jobs = sorted(self._pid2job.values(), key=lambda job: job['idx'])
@@ -427,6 +428,7 @@ class PooledCaller(object):
         self._n_cmds = 0
         self._idx2pid = {}
         self._pid2job = {}
+        print(self.res_queue.empty())
         if pool_size is not None:
             self.pool_size = old_size
         res = (ress,) + ((codes,) if return_codes else ()) + ((jobs,) if return_jobs else ())
