@@ -174,46 +174,49 @@ if __name__ == '__main__':
                         '-prefix', weight1_files[hemi][k], 
                         '-overwrite'], _error_pattern='error', _suppress_warning=True)
             pc.wait()
-            # Project lamina thickness to volume
-            def compute_thickness(fname, inner, outer):
-                vin, fin = io.read_surf_mesh(inner)
-                vout, fout = io.read_surf_mesh(outer)
-                d = np.linalg.norm(vout - vin, axis=-1)
-                io.write_1D_nodes(fname, None, d)
-            thick_1Ds = {}
-            for hemi in hemis:
-                thick_1Ds[hemi] = []
-                for k in range(n_laminae):
-                    thick_1Ds[hemi].append(path.join(temp_folder, '{0}.t{1:02d}.1D'.format(hemi, k)))
-                    pc.run(compute_thickness, thick_1Ds[hemi][k], lamina_files[hemi][k], lamina_files[hemi][k+1])
-            pc.wait()
-            thick_files = {}
-            for hemi in hemis:
-                thick_files[hemi] = []
-                for k in range(n_laminae):
-                    thick_files[hemi].append(path.join(temp_folder, '{0}.T{1:02d}+orig.HEAD'.format(hemi, k)))
-                    pc.run(['3dSurf2Vol',
-                        '-spec', lamina_spec[hemi],
-                        '-surf_A', lamina_names[hemi][k],
-                        '-surf_B', lamina_names[hemi][k+1],
-                        '-sv', args.surf_vol,
-                        '-grid_parent', args.base,
-                        '-sdata_1D', thick_1Ds[hemi][k],
-                        '-map_func', 'ave',
-                        '-f_steps', '20',
-                        '-f_index', 'nodes',
-                        '-prefix', thick_files[hemi][k], 
-                        '-overwrite'], _error_pattern='error', _suppress_warning=True)
-            pc.wait()
-            # Weighted sum
-            weight_files = {}
-            for hemi in hemis:
-                weight_files[hemi] = []
-                for k in range(n_laminae):
-                    weight_files[hemi].append(path.join(temp_folder, '{0}.W{1:02d}+orig.HEAD'.format(hemi, k)))
-                    pc.run("3dcalc -a {0} -b {1} -expr 'a*b' -prefix {2} -overwrite".format(
-                        weight1_files[hemi][k], thick_files[hemi][k], weight_files[hemi][k]), shell=True)
-            pc.wait()
+            if True:
+                # Project lamina thickness to volume
+                def compute_thickness(fname, inner, outer):
+                    vin, fin = io.read_surf_mesh(inner)
+                    vout, fout = io.read_surf_mesh(outer)
+                    d = np.linalg.norm(vout - vin, axis=-1)
+                    io.write_1D_nodes(fname, None, d)
+                thick_1Ds = {}
+                for hemi in hemis:
+                    thick_1Ds[hemi] = []
+                    for k in range(n_laminae):
+                        thick_1Ds[hemi].append(path.join(temp_folder, '{0}.t{1:02d}.1D'.format(hemi, k)))
+                        pc.run(compute_thickness, thick_1Ds[hemi][k], lamina_files[hemi][k], lamina_files[hemi][k+1])
+                pc.wait()
+                thick_files = {}
+                for hemi in hemis:
+                    thick_files[hemi] = []
+                    for k in range(n_laminae):
+                        thick_files[hemi].append(path.join(temp_folder, '{0}.T{1:02d}+orig.HEAD'.format(hemi, k)))
+                        pc.run(['3dSurf2Vol',
+                            '-spec', lamina_spec[hemi],
+                            '-surf_A', lamina_names[hemi][k],
+                            '-surf_B', lamina_names[hemi][k+1],
+                            '-sv', args.surf_vol,
+                            '-grid_parent', args.base,
+                            '-sdata_1D', thick_1Ds[hemi][k],
+                            '-map_func', 'ave',
+                            '-f_steps', '20',
+                            '-f_index', 'nodes',
+                            '-prefix', thick_files[hemi][k], 
+                            '-overwrite'], _error_pattern='error', _suppress_warning=True)
+                pc.wait()
+                # Weighted sum
+                weight_files = {}
+                for hemi in hemis:
+                    weight_files[hemi] = []
+                    for k in range(n_laminae):
+                        weight_files[hemi].append(path.join(temp_folder, '{0}.W{1:02d}+orig.HEAD'.format(hemi, k)))
+                        pc.run("3dcalc -a {0} -b {1} -expr 'a*b' -prefix {2} -overwrite".format(
+                            weight1_files[hemi][k], thick_files[hemi][k], weight_files[hemi][k]), shell=True)
+                pc.wait()
+            else: # volume_weighted2: No thickness multiplication, worse performance 
+                weight_files = weight1_files
             wsum_files = {}
             for hemi in hemis:
                 wsum_files[hemi] = path.join(temp_folder, '{0}.WSum+orig.HEAD'.format(hemi))

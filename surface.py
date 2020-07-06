@@ -465,7 +465,7 @@ class Surface(object):
         pc.wait()
         return pc._log
 
-    def surf2vol(self, base_file, in_files, out_file, func='median', combine='max(l,r)', depth_range=[0,1], mask_file=None):
+    def surf2vol(self, base_file, in_files, out_file, func='median', combine='mean', depth_range=[0,1], mask_file=None):
         '''
         Parameters
         ----------
