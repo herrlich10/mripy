@@ -270,8 +270,10 @@ if __name__ == '__main__':
     # Check successful
     if pc.all_successful():
         print('>> Depth estimation was done successfully.')
+        # Remove temp files
+        !rm -r {temp_folder}
     else:
         print('>> Sorry, but something went wrong in the middle...')
-
-    # Remove temp files
-    !rm -r {temp_folder}
+        # Print entire log
+        print(pc._log)
+    

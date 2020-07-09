@@ -386,11 +386,11 @@ class PooledCaller(object):
                         p.stdout.close() # Notify the child process that the PIPE has been broken
                         self.ps.remove(p)
                         if self.verbose > 0:
-                            print('>> job#{0} finished in {1}.'.format(job['idx'], format_duration(job['stop_time']-job['start_time'])))
+                            print('>> job#{0} finished (return {1}) in {2}.'.format(job['idx'], job['returncode'], format_duration(job['stop_time']-job['start_time'])))
                         self.res_queue.put([job['idx'], None]) # Return None to mimic callable behavior
                         job.pop('watcher') # These helper objects may not be useful for the end users
                         job.pop('speed_up')
-                        self._fulfilled[job['uuid']] = job['log_idx'] # Marked as fulfilled, even with error (or shall I break all??)
+                        self._fulfilled[job['uuid']] = job['log_idx'] # Marked as fulfilled, even with error (TODO: or shall I break all??)
                     else:
                         pass
                 elif isinstance(p, multiprocessing.Process):
@@ -399,7 +399,7 @@ class PooledCaller(object):
                         job['returncode'] = p.exitcode # subprocess.Popen and multiprocessing.Process use different names for this
                         self.ps.remove(p)
                         if self.verbose > 0:
-                            print('>> job#{0} finished in {1}.'.format(job['idx'], format_duration(job['stop_time']-job['start_time'])))
+                            print('>> job#{0} finished (return {1}) in {2}.'.format(job['idx'], job['returncode'], format_duration(job['stop_time']-job['start_time'])))
                         self._fulfilled[job['uuid']] = job['log_idx'] # Marked as fulfilled
                     else:
                         pass
@@ -418,6 +418,9 @@ class PooledCaller(object):
             print('>> All {0} jobs done in {1}.'.format(self._n_cmds, format_duration(duration)))
             if np.any(codes):
                 print('returncodes: {0}'.format(codes))
+                first_error = np.nonzero(codes)[0][0]
+                print(f">> Output for job#{first_error} was as follows:\n------------------------------")
+                print(jobs[first_error]['output'])
             else:
                 print('all returncodes are 0.')
             if self.all_successful(jobs=jobs):
@@ -428,7 +431,6 @@ class PooledCaller(object):
         self._n_cmds = 0
         self._idx2pid = {}
         self._pid2job = {}
-        print(self.res_queue.empty())
         if pool_size is not None:
             self.pool_size = old_size
         res = (ress,) + ((codes,) if return_codes else ()) + ((jobs,) if return_jobs else ())
