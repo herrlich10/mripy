@@ -172,7 +172,7 @@ if __name__ == '__main__':
                         '-f_steps', '20',
                         '-f_index', 'nodes',
                         '-prefix', weight1_files[hemi][k], 
-                        '-overwrite'], _error_pattern='error', _suppress_warning=True)
+                        '-overwrite'], _retry=3, _error_pattern='error', _suppress_warning=True)
             pc.wait()
             if True:
                 # Project lamina thickness to volume
@@ -204,7 +204,7 @@ if __name__ == '__main__':
                             '-f_steps', '20',
                             '-f_index', 'nodes',
                             '-prefix', thick_files[hemi][k], 
-                            '-overwrite'], _error_pattern='error', _suppress_warning=True)
+                            '-overwrite'], _retry=3, _error_pattern='error', _suppress_warning=True)
                 pc.wait()
                 # Weighted sum
                 weight_files = {}

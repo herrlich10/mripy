@@ -8,6 +8,7 @@ import tables, warnings
 from datetime import datetime
 from itertools import chain
 from collections import OrderedDict
+from contextlib import contextmanager
 from os import path
 import numpy as np
 from deepdish import io as dio
@@ -175,6 +176,14 @@ def exists(fname, force_redo=False):
     else:
         print('>> Reuse existing "{0}"'.format(fname))
         return True
+
+
+@contextmanager
+def cd(d):
+    old_dir = os.getcwd()
+    os.chdir(d)
+    yield
+    os.chdir(old_dir)
 
 
 class CacheManager(object):

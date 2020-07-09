@@ -213,7 +213,7 @@ class PooledCaller(object):
         self._fulfilled = {} # Fulfilled dependencies across waits (a faster API compared with self._log)
         self.res_queue = multiprocessing.Queue() # Queue for return values of executed python callables
  
-    def run(self, cmd, *args, _depends=None, _dispatch=False, _error_pattern=None, _suppress_warning=False, _block=False, **kwargs):
+    def run(self, cmd, *args, _depends=None, _retry=None, _dispatch=False, _error_pattern=None, _suppress_warning=False, _block=False, **kwargs):
         '''Asynchronously run command or callable (queued execution, return immediately).
         
         See subprocess.Popen() for more information about the arguments.
@@ -242,6 +242,8 @@ class PooledCaller(object):
         _depends : list
             A list of jobs (identified by their uuid) that have to be done 
             before this job can be scheduled.
+        _retry: int
+            Number of retry before accepting failure (if detecting non-zero return code).
         _dispatch : bool
             Dispatch the job immediately, which will run in the background without blocking.
         _error_pattern : str
@@ -256,7 +258,9 @@ class PooledCaller(object):
         '''
         cmd = cmd_for_exec(cmd, shell=kwargs)
         _uuid = uuid.uuid4().hex[:8]
-        self.cmd_queue.append((self._n_cmds, cmd, args, kwargs, _uuid, _depends, _error_pattern, _suppress_warning))
+        if _retry is None:
+            _retry = 0
+        self.cmd_queue.append((self._n_cmds, cmd, args, kwargs, _uuid, _depends, _retry, _error_pattern, _suppress_warning))
         self._n_cmds += 1 # Accumulate by each call to run(), and reset after wait()
         if _dispatch:
             self.dispatch()
@@ -308,12 +312,14 @@ class PooledCaller(object):
         # If there are free slot and more jobs
         # while len(self.ps) < self.pool_size and len(self.cmd_queue) > 0:
         if len(self.ps) < self.pool_size and len(self.cmd_queue) > 0:
-            idx, cmd, args, kwargs, _uuid, _depends, _error_pattern, _suppress_warning = self.cmd_queue.pop(0)
+            idx, cmd, args, kwargs, _uuid, _depends, _retry, _error_pattern, _suppress_warning = self.cmd_queue.pop(0)
             if _depends is None or all([dep in self._fulfilled for dep in _depends]): # No dependency or all fulfilled
-                job = {'idx': idx, 'cmd': cmd_for_disp(cmd), 'output': [], 'error_pattern': _error_pattern , 
-                    'suppress_warning': _suppress_warning} # Create a job process only after it is popped from the queue
+                # Create a job process only after it is popped from the queue
+                job = {'idx': idx, 'cmd': cmd, 'args': args, 'kwargs': kwargs, 'uuid':  _uuid, 
+                    'depends': _depends, 'retry': _retry, 'error_pattern': _error_pattern , 
+                    'suppress_warning': _suppress_warning, 'output': []} 
                 if self.verbose > 0:
-                    print('>> job#{0}: {1}'.format(idx, job['cmd']))
+                    print('>> job#{0}: {1}'.format(idx, cmd_for_disp(job['cmd'])))
                 if callable(cmd):
                     # TODO: Add an if-else branch here if shared memory doesn't work for wrapper 
                     p = multiprocessing.Process(target=self._callable_wrapper, args=(idx, cmd) + args, kwargs=kwargs)
@@ -329,13 +335,13 @@ class PooledCaller(object):
                 self.ps.append(p)
                 job['start_time'] = time.time()
                 job['pid'] = p.pid
-                job['uuid'] = _uuid
+                job['successor'] = None
                 job['log_idx'] = len(self._log)
                 self._idx2pid[idx] = p.pid
                 self._pid2job[p.pid] = job
                 self._log.append(job)
             else: # Re-queue the job whose dependencies are not fully fulfilled to the END of the queue
-                self.cmd_queue.append((idx, cmd, args, kwargs, _uuid, _depends, _error_pattern, _suppress_warning))
+                self.cmd_queue.append((idx, cmd, args, kwargs, _uuid, _depends, _retry, _error_pattern, _suppress_warning))
 
     def _async_get_res(self, res_list):
         try:
@@ -387,10 +393,21 @@ class PooledCaller(object):
                         self.ps.remove(p)
                         if self.verbose > 0:
                             print('>> job#{0} finished (return {1}) in {2}.'.format(job['idx'], job['returncode'], format_duration(job['stop_time']-job['start_time'])))
-                        self.res_queue.put([job['idx'], None]) # Return None to mimic callable behavior
-                        job.pop('watcher') # These helper objects may not be useful for the end users
-                        job.pop('speed_up')
-                        self._fulfilled[job['uuid']] = job['log_idx'] # Marked as fulfilled, even with error (TODO: or shall I break all??)
+                        if job['returncode'] != 0: # Failed
+                            if job['retry'] > 0: # Need retry
+                                # Insert a new cmd (as if we automatically run it again)
+                                self.cmd_queue.append((self._n_cmds, job['cmd'], job['args'], job['kwargs'], job['uuid'], 
+                                    job['depends'], job['retry']-1, job['error_pattern'], job['suppress_warning']))
+                                job['successor'] = self._n_cmds
+                                self._n_cmds += 1
+                            else: # No more retry, accept failure...
+                                raise RuntimeError(f">> job#{job['idx']} failed!\n Full output:\n {''.join(job['output'])}")
+                        else: # Successful
+                            self.res_queue.put([job['idx'], None]) # Return None to mimic callable behavior
+                            self._fulfilled[job['uuid']] = job['log_idx'] # Marked as fulfilled, even with error (TODO: or shall I break all??)
+                        # These helper objects may not be useful for the end users
+                        for key in ['watcher', 'speed_up', 'args', 'kwargs']:
+                            job.pop(key) 
                     else:
                         pass
                 elif isinstance(p, multiprocessing.Process):
@@ -400,7 +417,11 @@ class PooledCaller(object):
                         self.ps.remove(p)
                         if self.verbose > 0:
                             print('>> job#{0} finished (return {1}) in {2}.'.format(job['idx'], job['returncode'], format_duration(job['stop_time']-job['start_time'])))
+                        # TODO: retry mechanism for callable
                         self._fulfilled[job['uuid']] = job['log_idx'] # Marked as fulfilled
+                        # Remove potentially very large data
+                        for key in ['args', 'kwargs']:
+                            job.pop(key) 
                     else:
                         pass
             time.sleep(0.1)
@@ -411,7 +432,7 @@ class PooledCaller(object):
             self._async_get_res(ress)
         ress = [res[1] for res in sorted(ress, key=lambda res: res[0])]
         # Handle return codes by children processes
-        jobs = sorted(self._pid2job.values(), key=lambda job: job['idx'])
+        jobs = sorted([job for job in self._pid2job.values() if job['successor'] is None], key=lambda job: job['idx'])
         codes = [job['returncode'] for job in jobs]
         if self.verbose > 0:
             duration = time.time() - start_time
