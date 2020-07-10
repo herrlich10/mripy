@@ -362,7 +362,7 @@ def dset2roi(f_dset, f_roi=None, colors=None):
             fmt=['%d', '%d', '%.6f', '%.6f', '%.6f'])
 
 
-def surface_calc(expr=None, out_file=None, **kwargs):
+def _surface_calc(expr=None, out_file=None, **kwargs):
     variables = {}
     for k, (var, fname) in enumerate(kwargs.items()):
         nodes, values = io.read_surf_data(fname)
@@ -380,6 +380,13 @@ def surface_calc(expr=None, out_file=None, **kwargs):
         variables[var] = values[shared]
     v = _with_pylab.pylab_eval(expr, **variables)
     io.write_surf_data(out_file, shared_nodes, v)
+
+
+def surface_calc(expr=None, out_file=None, **kwargs):
+    out_file = afni.infer_surf_dset_variants(out_file)
+    kwargs = {k: afni.infer_surf_dset_variants(v) for k, v in kwargs.items()}
+    for hemi in ['lh', 'rh']:
+        _surface_calc(expr=expr, out_file=out_file[hemi], **{k: v[hemi] for k, v in kwargs.items()})
 
 
 class Surface(object):

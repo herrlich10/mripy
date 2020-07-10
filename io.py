@@ -1129,7 +1129,7 @@ def generate_afni_idcode():
 
 def get_ni_type(x):
     multiple = '{0}*'.format(x.shape[1]) if x.squeeze().ndim > 1 else ''
-    if np.issubdtype(x.dtype, np.integer):
+    if np.issubdtype(x.dtype, np.integer) or np.issubdtype(x.dtype, np.bool_):
         return multiple+'int'
     elif np.issubdtype(x.dtype, np.floating):
         return multiple+'float'
