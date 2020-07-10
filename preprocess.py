@@ -255,6 +255,7 @@ def is_affine_transform(fname):
 def apply_transforms(transforms, base_file, in_file, out_file, interp=None, res=None, save_xform=None):
     '''
     Note that last transform applys first, as in AFNI.
+    Transforms can be modified as "xform.aff12.1D -I" for inversion.
     '''
     if isinstance(transforms, six.string_types):
         transforms = [transforms]
@@ -268,13 +269,14 @@ def apply_transforms(transforms, base_file, in_file, out_file, interp=None, res=
     has_nwarp = not np.all([is_affine_transform(f) for f in transforms])
     res_cmd = f"-newgrid {res}" if res is not None else ''
     if has_nwarp:
-        transform_list = ' '.join(transforms)
+        transform_list = ' '.join([f"INV({t})" if t.endswith(' -I') else t for t in transforms])
         # 'transform_list' must be quoted
+        # -nwarp requires at least one nonlinear transform, can be IDENT(base_file.nii)
         utils.run(f"3dNwarpApply -interp {interp} -master {base_file} {res_cmd} \
             -nwarp '{transform_list}' -source {in_file} \
             -prefix {out_file} -overwrite")
     else:
-        combined = combine_affine_transforms(transforms, out_file=save_xform)['out_file']
+        combined = combine_affine_transforms(transforms, out_file=save_xform)['out_file'] # This will handle "-I"
         # 'wsinc5' is 8x slower than 'quintic', but is highly accurate 
         # and should reduce the smoothing artifacts (see 3dAllineate)
         utils.run(f"3dAllineate -final {interp} -base {base_file} {res_cmd} \
@@ -1486,6 +1488,8 @@ class Transform(object):
         Parameters
         ----------
         transforms : list of (fwd_xform, inv_xform) pairs
+            If only one transform (rather than a tuple) is given, it is assumed to be
+            the fwd_xform, and "fwd_xform -I" is treated as inv_xform.
             Transform chain should be specified using "pulling" convention, i.e., 
             last transform applies first (as in AFNI and ANTs for volumes).
             Each transform should also be a "pulling" transform from moving to fixed 
@@ -1493,16 +1497,17 @@ class Transform(object):
             Transforms should be specified by their file names, and inverse transforms 
             can be specified as "*_0GenericAffine.mat -I" (esp. for affine).
         '''
-        self.transforms = copy.deepcopy(transforms)
+        # Add inverse transform automatically for singleton (assumed linear)
+        self.transforms = [(t, f"{t} -I") if isinstance(t, str) else tuple(t) for t in transforms]
         self.base_file = base_file
         self.source_file = source_file
 
     def inverse(self):
         transforms = [transform[::-1] for transform in self.transforms[::-1]]
-        return xform.__class__(transforms, base_file=self.source_file, source_file=self.base_file)
+        return self.__class__(transforms, base_file=self.source_file, source_file=self.base_file)
 
     def rebase(self, base_file):
-        return xform.__class__(self.transforms, base_file=base_file, source_file=self.source_file)
+        return self.__class__(self.transforms, base_file=base_file, source_file=self.source_file)
 
     def replace_path(self, p):
         f = lambda fname: path.join(p, path.basename(fname))
@@ -1531,6 +1536,22 @@ class Transform(object):
 
     def __repr__(self):
         return f"<{self.__class__.__name__} | from {path.basename(self.source_file)} to {path.basename(self.base_file)} >"
+
+    def apply(self, in_file, out_file, base_file=None, interp=None, **kwargs):
+        '''
+        For volumes, forward transform (from input/moving to base/fixed)
+        '''
+        transforms = [xform_pair[0] for xform_pair in self.transforms]
+        base_file = self.base_file if base_file is None else base_file
+        return apply_transforms(transforms, base_file, in_file, out_file, interp=interp, **kwargs)
+
+    def apply_inverse(self, in_file, out_file, base_file=None, interp=None, **kwargs):
+        '''
+        For volumes, inverse transform (from base/fixed to input/moving)
+        '''
+        transforms = [xform_pair[1] for xform_pair in self.transforms[::-1]] # Inverse
+        base_file = self.source_file if base_file is None else base_file
+        return apply_transforms(transforms, base_file, in_file, out_file, interp=interp, **kwargs)
 
 
 class ANTsTransform(Transform):
