@@ -1064,6 +1064,31 @@ def create_vessel_mask_BOLD(beta, out_file, th=10):
     return outputs
 
 
+def unifize_epi(in_file, out_file, method='Kay2019', ribbon=None):
+    prefix, ext = afni.split_out_file(out_file)
+    outputs = {'out_file': f"{prefix}{ext}"}
+    if method.lower() == 'kay2019':
+        temp_file = utils.temp_prefix(suffix='.nii')
+        # Dilate ribbon by 1 voxel to reduce the influence of boundary values in vol2surf(min)
+        utils.run(f"3dmask_tool -input {ribbon} -prefix {temp_file} -dilate_input 1")
+        # Fit the spatial trend in cortical ribbon
+        ribbon = io.Mask(temp_file)
+        epi = ribbon.dump(in_file)
+        x, y, z = ribbon.xyz.T
+        c = math.polyfit3d(x, y, z, epi, deg=4, method='ridge') # (ridge, deg=4) outperforms (ols, deg=4), similar to (ols, deg=2)
+        fitted = polynomial.polyval3d(x, y, z, c)
+        # Remove spatial trend by divisive normalization
+        normed = epi/fitted * 1000 # Mean ~ 1000
+        ribbon.undump(outputs['out_file'], normed)
+        os.remove(temp_file)
+    elif method.lower() == 'N4':
+        correct_bias_field(in_file, outputs['out_file'])
+    elif method.lower() == '3dunifize':
+        utils.run(f"3dUnifize -EPI -prefix {outputs['out_file']} -overwrite {in_file}")
+    all_finished(outputs)
+    return outputs
+
+
 def create_vessel_mask_EPI(mean_epi, ribbon, out_file, corr_file=None, th=None):
     '''
     Find vessel voxels based on bias-corrected EPI intensity (Kay's method).
