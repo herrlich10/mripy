@@ -363,6 +363,10 @@ def dset2roi(f_dset, f_roi=None, colors=None):
 
 
 def _surface_calc(expr=None, out_file=None, **kwargs):
+    '''
+    Different input dsets are allowed to have different nodes coverage.
+    Only values on shared nodes are returned or written.
+    '''
     variables = {}
     for k, (var, fname) in enumerate(kwargs.items()):
         nodes, values = io.read_surf_data(fname)
@@ -379,7 +383,9 @@ def _surface_calc(expr=None, out_file=None, **kwargs):
         assert(np.all(nodes[shared]==shared_nodes)) 
         variables[var] = values[shared]
     v = _with_pylab.pylab_eval(expr, **variables)
-    io.write_surf_data(out_file, shared_nodes, v)
+    if out_file is not None:
+        io.write_surf_data(out_file, shared_nodes, v)
+    return shared_nodes, v
 
 
 def surface_calc(expr=None, out_file=None, **kwargs):
@@ -387,6 +393,35 @@ def surface_calc(expr=None, out_file=None, **kwargs):
     kwargs = {k: afni.infer_surf_dset_variants(v) for k, v in kwargs.items()}
     for hemi in ['lh', 'rh']:
         _surface_calc(expr=expr, out_file=out_file[hemi], **{k: v[hemi] for k, v in kwargs.items()})
+
+
+class SurfMask(object):
+    def __init__(self, master):
+        if master is not None:
+            nodes, values = io.read_surf_data(master)
+            self.nodes = nodes[values > 0]
+
+    @classmethod
+    def from_expr(cls, expr=None, **kwargs):
+        mask = cls(master=None)
+        nodes, values = _surface_calc(expr=expr, **kwargs)
+        mask.nodes = nodes[values > 0]
+        return mask
+
+    def __repr__(self):
+        return f"{self.__class__.__name__} ({len(self.nodes)} nodes)"
+
+    def dump(self, fname):
+        if isinstance(fname, str):
+            fname = [fname]
+        values = []
+        for f in fname:
+            n, v = io.read_surf_data(f)
+            assert(np.all(np.in1d(self.nodes, n))) # SurfMask nodes must be covered by dset nodes
+            shared = np.in1d(n, self.nodes)
+            assert(np.all(n[shared]==self.nodes)) # Make sure nodes order are correspondent
+            values.append(v[shared])
+        return np.array(values).T.squeeze()
 
 
 class Surface(object):
