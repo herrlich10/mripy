@@ -1064,7 +1064,20 @@ def create_vessel_mask_BOLD(beta, out_file, th=10):
     return outputs
 
 
-def unifize_epi(in_file, out_file, method='Kay2019', ribbon=None):
+def unifize_epi(in_file, out_file, method='N4', ribbon=None):
+    '''
+    Remove spatial trend/inhomogeneity in (mean) EPI data
+        to better identify vessels using find_epi_dark_voxel_threshold().
+        
+    The default 'N4' method requires you have ANTs installed.
+    Only 'Kay2019' method need an additional cortical ribbon mask
+        that is aligned with the EPI volume.
+
+    Parameters
+    ----------
+    method : str, 'N4' | 'Kay2019' | '3dUnifize'
+        
+    '''
     prefix, ext = afni.split_out_file(out_file)
     outputs = {'out_file': f"{prefix}{ext}"}
     if method.lower() == 'kay2019':
@@ -1087,6 +1100,34 @@ def unifize_epi(in_file, out_file, method='Kay2019', ribbon=None):
         utils.run(f"3dUnifize -EPI -prefix {outputs['out_file']} -overwrite {in_file}")
     all_finished(outputs)
     return outputs
+
+
+def find_epi_dark_voxel_threshold(v, method='Liu2020'):
+    '''
+    Find EPI intensity threshold for blood vessels on surface dset,
+        produced by Surface.vol2surf(func='min').
+
+    Parameters
+    ----------
+    method : str, 'Liu2020' | 'Marquardt2018' | 'Kay2019'
+        Surprisingly, the three methods usually produce very similar results.
+        The mixture of Gaussian method ('Kay2019') is robust with 'N4' or 'Kay2019'
+        unifized EPI data (using preprocess.unifize_epi), but may fail with 
+        '3dUnifize' or raw EPI data.
+    '''
+    v = v[v>0]
+    if method.lower() == 'kay2019':
+        model = mixture.GaussianMixture(n_components=2)
+        model.fit(v.reshape(-1,1))
+        comps = np.argsort(model.means_.ravel()) # Components as sorted by mean value (ascending)
+        x = np.arange(0, max(v), 0.1)
+        p = model.predict_proba(x.reshape(-1,1))
+        th = x[np.nonzero(p[:,comps[1]] > p[:,comps[0]])[0][0]]
+    elif method.lower() == 'liu2020':
+        th = np.mean(v) * 0.75
+    elif method.lower() == 'marquardt2018':
+        th = np.mean(v) * 0.7
+    return th
 
 
 def create_vessel_mask_EPI(mean_epi, ribbon, out_file, corr_file=None, th=None):
