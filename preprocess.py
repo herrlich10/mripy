@@ -837,6 +837,18 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, V1=True, hires=True,
 
 
 def create_suma_dir(subj_dir, NIFTI=True):
+    '''
+    Notes about NIFTI
+    -----------------
+    If NIFTI=True, @SUMA_Make_Spec_FS will use mri_convert to convert 
+        $surf_dir/orig.mgz (which is averaged and hires) to SurfVol.nii.
+        Volumes will be in .nii and surfaces will be in .gii format.
+        This is the preferable way to go.
+    If NIFTI=False, @SUMA_Make_Spec_FS will use to3d to convert COR- files
+        to SurfVol+orig.HEAD which is 1x1x1.
+        Volumes will be in +orig.HEAD and surfaces will be in .asc format.
+        This is only provided for backward compatibility.
+    '''
     subj = path.split(subj_dir)[1]
     outputs = {
         'suma_dir': f"{subj_dir}/SUMA",
