@@ -1,0 +1,14 @@
+include *.rst
+include LICENSE.txt
+include requirements.txt
+
+# mripy
+recursive-include mripy *.ipy   # Mainly in mripy/scripts
+recursive-include mripy *.sh    # Mainly in mripy/scripts
+recursive-include mripy *.m     # Mainly in mripy/matlab
+recursive-include mripy *.json  # Mainly in mripy/data
+
+include mripy/scripts/ipython_wrapper
+
+# examples
+recursive-include examples *.txt *.py *.ipy *.ipynb

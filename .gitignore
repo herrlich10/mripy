@@ -4,4 +4,5 @@ __pycache__
 .vscode
 build
 dist
-mripy.egg-info
+*.egg-info
+internal_tests
