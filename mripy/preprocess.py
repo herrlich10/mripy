@@ -631,7 +631,7 @@ def create_mp2rage_SNR_mask(T1s, out_file):
     return outputs
 
 
-def prep_mp2rage(dicom_dirs, out_file='T1.nii', unwarp=True, dicom_ext='.IMA'):
+def prep_mp2rage(dicom_dirs, out_file='T1.nii', unwarp=False, dicom_ext='.IMA'):
     '''Convert dicom files and remove the noise pattern outside the brain.
 
     dicom_dirs : list or str
