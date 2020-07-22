@@ -283,7 +283,7 @@ def get_ORIENT(fname, format='str'):
                          [ 0, 1, 0],
                          [ 0, 0, 1],
                          [ 0, 0,-1]])
-    code2sorter = np.array([0, 0, 1, 1, 2, 2])
+    code2axis = np.array([0, 0, 1, 1, 2, 2])
     if format == 'code':
         return ORIENT
     elif format == 'str':
@@ -291,7 +291,7 @@ def get_ORIENT(fname, format='str'):
     elif format == 'mat':
         return code2mat[ORIENT]
     elif format == 'sorter':
-        return code2sorter[ORIENT]
+        return np.argsort(code2axis[ORIENT])
 
 
 def get_DIMENSION(fname):
