@@ -10,5 +10,8 @@ recursive-include mripy *.json  # Mainly in mripy/data
 
 include mripy/scripts/ipython_wrapper
 
+# mripy/tests
+recursive-include mripy *.nii *.nii.gz   # Mainly in mripy/tests/testdata
+
 # examples
 recursive-include examples *.txt *.py *.ipy *.ipynb
