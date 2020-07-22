@@ -249,7 +249,7 @@ def combine_affine_transforms(transforms, out_file=None):
 
 
 def is_affine_transform(fname):
-    return fname.endswith('.1D')
+    return fname.endswith('.1D') or fname.endswith('.1D -I')
 
 
 def apply_transforms(transforms, base_file, in_file, out_file, interp=None, res=None, save_xform=None):
@@ -269,7 +269,7 @@ def apply_transforms(transforms, base_file, in_file, out_file, interp=None, res=
     has_nwarp = not np.all([is_affine_transform(f) for f in transforms])
     res_cmd = f"-newgrid {res}" if res is not None else ''
     if has_nwarp:
-        transform_list = ' '.join([f"INV({t})" if t.endswith(' -I') else t for t in transforms])
+        transform_list = ' '.join([f"INV({t[:-3]})" if t.endswith(' -I') else t for t in transforms])
         # 'transform_list' must be quoted
         # -nwarp requires at least one nonlinear transform, can be IDENT(base_file.nii)
         utils.run(f"3dNwarpApply -interp {interp} -master {base_file} {res_cmd} \
