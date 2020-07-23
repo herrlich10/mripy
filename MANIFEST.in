@@ -8,6 +8,7 @@ recursive-include mripy *.sh    # Mainly in mripy/scripts
 recursive-include mripy *.m     # Mainly in mripy/matlab
 recursive-include mripy *.json  # Mainly in mripy/data
 
+include mripy/__version__
 include mripy/scripts/ipython_wrapper
 
 # mripy/tests

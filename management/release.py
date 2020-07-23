@@ -34,6 +34,14 @@ def find_missing_files(src_dir, dst_dir):
                         missing.append(path.join(root, curr, fname))
     return missing
 
+def increase_version():
+    version_file = f"{package}/__version__"
+    with open(version_file) as f:
+        version = f.readline().strip().split('.')
+    version[-1] = str(int(version[-1])+1)
+    with open(version_file, 'w') as f:
+        f.write(f"{'.'.join(version)}\n")
+
 
 if __name__ == '__main__':
     mode = sys.argv[1] if len(sys.argv) > 1 else ''
@@ -41,7 +49,8 @@ if __name__ == '__main__':
     if mode == 'release':
         build()
         print(f">> Uploading to PyPI ...")
-        subprocess.run('python -m twine upload dist/*', shell=True)
+        subprocess.run('python -m twine upload dist/*', shell=True, check=True)
+        increase_version()
         clean()
     elif mode == 'test':
         build()
