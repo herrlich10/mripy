@@ -1613,7 +1613,9 @@ class Transform(object):
         return inst
 
     def __repr__(self):
-        return f"<{self.__class__.__name__} | from {path.basename(self.source_file)} to {path.basename(self.base_file)} >"
+        source = path.basename(self.source_file) if self.source_file is not None else 'unknown'
+        base = path.basename(self.base_file) if self.base_file is not None else 'unknown'
+        return f"<{self.__class__.__name__} | from {source} to {base} >"
 
     def apply(self, in_file, out_file, base_file=None, interp=None, **kwargs):
         '''

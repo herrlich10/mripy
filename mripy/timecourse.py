@@ -325,7 +325,7 @@ def read_events(event_files):
 
     Returns
     -------
-    events : list of n_events-by-3 arrays
+    events_list : list of n_events-by-3 arrays
         The three columns are [start_time(sec), reserved, event_id(int)]
     event_id : dict
     '''
@@ -352,12 +352,12 @@ def read_events(event_files):
                     t[rid].extend(t_run)
                     e[rid].extend(np.ones_like(t_run)*(eid))
         event_id[event] = eid
-    events = []
+    events_list = []
     for rid in range(len(t)):
         events_run = np.c_[t[rid], np.zeros_like(t[rid]), e[rid]]
         sorter = np.argsort(events_run[:,0])
-        events.append(events_run[sorter,:])
-    return events, event_id
+        events_list.append(events_run[sorter,:])
+    return events_list, event_id
 
 
 def events_from_dataframe(df, run, time, conditions, duration=None, event_id=None):
@@ -370,6 +370,16 @@ def events_from_dataframe(df, run, time, conditions, duration=None, event_id=Non
     for run in df[run].unique():
         events.append(np.array([[trial.time, get_duration(trial), get_event_id(trial)] for trial in df[df.run==run].itertuples()]))
     return events, event_id
+
+
+def events_to_dataframe(events_list, event_id, conditions):
+    id2event = {eid: event.split('/') for event, eid in event_id.items()}
+    trials = []
+    for rid, events in enumerate(events_list):
+        for tid in range(len(events)):
+            trials.append(OrderedDict([('run', rid+1), ('trial', tid+1), ('time', events[tid,0])] \
+                + list(zip(conditions, id2event[events[tid,2]]))))
+    return pd.DataFrame(trials)
 
 
 def _default_event_id(events):
