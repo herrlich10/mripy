@@ -1348,7 +1348,7 @@ def _ants_sanitize_input(in_file, overwrite=True):
 
 
 def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask=None, 
-    base_mask_SyN=None, in_mask_SyN=None, preset=None):
+    base_mask_SyN=None, in_mask_SyN=None, init_transform=None, preset=None, n_jobs=None):
     '''
     Nonlinearly align `in_file` to `base_file` using ANTs' SyN method via antsRegistration.
 
@@ -1420,14 +1420,22 @@ def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask
     pc.run(populate_mask, base_mask_SyN, temp_dir, ref_file=base_file)
     pc.run(populate_mask, in_mask_SyN, temp_dir, ref_file=in_file)
     base_mask, in_mask, base_mask_SyN, in_mask_SyN = pc.wait()
+    # Init moving transform
+    if init_transform is None:
+        # Align the geometric center of the images (=0), the image intensities (=1), or the origin of the images (=2).
+        init_moving_cmd = f"--initial-moving-transform [ {fixed}, {moving}, 1 ]"
+    elif init_transform in ['none', 'identity']:
+        init_moving_cmd = ''
+    else:
+        init_moving_cmd = f"--initial-moving-transform {init_transform}"
     # Estimate transforms
-    os.environ['ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS'] = str(DEFAULT_JOBS)
+    os.environ['ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS'] = str(DEFAULT_JOBS) if n_jobs is None else str(n_jobs)
     if preset is None:
         pc.run1(f"antsRegistration -d 3 --float 1 --verbose \
             --output [ {prefix}_, {outputs['fwd_warped']}, {outputs['inv_warped']} ] \
             --interpolation LanczosWindowedSinc \
             --collapse-output-transforms 1 \
-            --initial-moving-transform [ {fixed}, {moving}, 1 ]  \
+            {init_moving_cmd} \
             --winsorize-image-intensities [0.005,0.995] \
             --use-histogram-matching 1 \
             --transform translation[ 0.1 ] \
@@ -1465,8 +1473,7 @@ def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask
                 preset = json.load(json_file)
         # `preset` is now a dict
         # Generate antsRegistration command line
-        init_moving_cmd = '--initial-moving-transform [ {fixed}, {moving}, 1 ]'
-        cmd =  f"antsRegistration -d {preset['dimension']} --float 1 --verbose \
+        cmd = f"antsRegistration -d {preset['dimension']} --float 1 --verbose \
             --output [ {prefix}_, {outputs['fwd_warped']}, {outputs['inv_warped']} ] \
             --interpolation {preset['interpolation']} \
             --collapse-output-transforms 1 \

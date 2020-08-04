@@ -3,6 +3,7 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
 import os, shutil, ctypes, multiprocessing
 from os import path
+import parser
 from itertools import chain
 from scipy import spatial
 import numpy as np
@@ -367,14 +368,17 @@ def _surface_calc(expr=None, out_file=None, **kwargs):
     Different input dsets are allowed to have different nodes coverage.
     Only values on shared nodes are returned or written.
     '''
+    used = parser.expr(expr).compile().co_names # Parse variables in `expr`
     variables = {}
-    for k, (var, fname) in enumerate(kwargs.items()):
-        nodes, values = io.read_surf_data(fname)
-        variables[var] = (nodes, values)
-        if k == 0:
-            shared_nodes = set(nodes)
-        else:
-            shared_nodes = shared_nodes.intersection(nodes)
+    shared_nodes = None
+    for var, fname in kwargs.items():
+        if var in used: # Only consider used variables in `expr`
+            nodes, values = io.read_surf_data(fname)
+            variables[var] = (nodes, values)
+            if shared_nodes is None:
+                shared_nodes = set(nodes)
+            else:
+                shared_nodes = shared_nodes.intersection(nodes)
     shared_nodes = np.array(sorted(shared_nodes)) # `sorted` is required
     for var, (nodes, values) in variables.items():
         shared = np.in1d(nodes, shared_nodes)
