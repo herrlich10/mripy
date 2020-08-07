@@ -159,7 +159,13 @@ def get_surf_vol(suma_dir):
     '''
     Infer SUMA SurfVol filename with full path (agnostic about file type: .nii vs +orig.HEAD/BRIK).
     '''
-    return glob.glob(path.join(suma_dir, '*_SurfVol*'))[0]
+    # TODO: SurfVol.depth.nii
+    candidates = glob.glob(path.join(suma_dir, '*_SurfVol*'))
+    candidates = [f for f in candidates if re.search(r'_SurfVol(?:\.nii|\+orig\.HEAD)', f)]
+    if len(candidates) == 0:
+        raise ValueError(f'>> Cannot identify SurfVol in "{suma_dir}"')
+    else:
+        return candidates[0]
 
 
 def get_suma_subj(suma_dir):
