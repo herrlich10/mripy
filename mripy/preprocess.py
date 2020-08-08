@@ -121,22 +121,30 @@ def blip_unwarp(forward_file, reverse_file, reverse_loc, out_file, PE_axis='AP',
 
     # Prepare forward template
     n_subs = 5
-    fnt = afni.get_dims(forward_file)[3]
-    fsub = {'before': f"[0..{min(fnt, n_subs)-1}]", 'after': f"[{max(0, fnt-n_subs)}..$]"}[reverse_loc]
-    outputs['template_idx'] = {'before': min(fnt, n_subs)//2, 'after': (max(0, fnt-n_subs) + fnt)//2}[reverse_loc]
-    # There is no need to protect the paths against whitespace (yet) because AFNI doesn't support it.
-    utils.run(f"3dvolreg -zpad 1 -base {n_subs//2} -prefix {temp_dir}/forwards.nii -overwrite {forward_file}'{fsub}'")
-    utils.run(f"3dTstat -median -prefix {temp_dir}/forward.nii -overwrite {temp_dir}/forwards.nii")
+    fwd_nt = afni.get_dims(forward_file)[3]
+    fwd_sub = {'before': f"[0..{min(fwd_nt, n_subs)-1}]", 'after': f"[{max(0, fwd_nt-n_subs)}..$]"}[reverse_loc]
+    fwd_n = min(n_subs, fwd_nt)
+    outputs['template_idx'] = {'before': fwd_n//2, 'after': (max(0, fwd_nt-n_subs) + fwd_nt)//2}[reverse_loc]
+    if fwd_n > 1:
+        # There is no need to protect the paths against whitespace (yet) because AFNI doesn't support it.
+        utils.run(f"3dvolreg -zpad 1 -base {fwd_n//2} -prefix {temp_dir}/forwards.nii -overwrite {forward_file}'{fwd_sub}'")
+        utils.run(f"3dTstat -median -prefix {temp_dir}/forward.nii -overwrite {temp_dir}/forwards.nii")
+    else:
+        utils.run(f"3dcopy {temp_dir}/forwards.nii {temp_dir}/forward.nii -overwrite ")
     utils.run(f"3dAutomask -apply_prefix {temp_dir}/forward.masked.nii -overwrite {temp_dir}/forward.nii")
 
     # Prepare reverse template
-    rnt = afni.get_dims(reverse_file)[3]
-    rsub = {'before': f"[{max(0, rnt-n_subs)}..$]", 'after': f"[0..{min(rnt, n_subs)-1}]"}[reverse_loc]
+    rev_nt = afni.get_dims(reverse_file)[3]
+    rev_sub = {'before': f"[{max(0, rev_nt-n_subs)}..$]", 'after': f"[0..{min(rev_nt, n_subs)-1}]"}[reverse_loc]
+    rev_n = min(n_subs, rev_nt)
     # Input datasets for 3dQwarp must be on the same 3D grid (unlike program 3dAllineate)!
     utils.run(f"3dresample -rmode NN -master {temp_dir}/forwards.nii \
-        -prefix {temp_dir}/reverses.nii -overwrite -input {reverse_file}'{rsub}'")
-    utils.run(f"3dvolreg -zpad 1 -base {n_subs//2} -prefix {temp_dir}/reverses.nii -overwrite {temp_dir}/reverses.nii")
-    utils.run(f"3dTstat -median -prefix {temp_dir}/reverse.nii -overwrite {temp_dir}/reverses.nii")
+        -prefix {temp_dir}/reverses.nii -overwrite -input {reverse_file}'{rev_sub}'")
+    if rev_n > 1:
+        utils.run(f"3dvolreg -zpad 1 -base {rev_n//2} -prefix {temp_dir}/reverses.nii -overwrite {temp_dir}/reverses.nii")
+        utils.run(f"3dTstat -median -prefix {temp_dir}/reverse.nii -overwrite {temp_dir}/reverses.nii")
+    else:
+        utils.run(f"3dcopy {temp_dir}/reverses.nii {temp_dir}/reverse.nii -overwrite ")
     utils.run(f"3dAutomask -apply_prefix {temp_dir}/reverse.masked.nii -overwrite {temp_dir}/reverse.nii")
     
     # Estimate nonlinear midpoint transform
