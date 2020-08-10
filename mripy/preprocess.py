@@ -1349,7 +1349,7 @@ def _ants_sanitize_input(in_file, overwrite=True):
         print(f'+* WARNING: "{in_file}" contains multiple volumes. Only the first volume will be considered in the registration.')
         out_file = in_file if overwrite else utils.temp_prefix(suffix='.nii')
         is_temp = not overwrite
-        utils.run(f"3dTcat -prefix {out_file} -overwrite {in_file}'[0]'")
+        utils.run(f"3dTcat -prefix {out_file} -overwrite {in_file}'[0]'", error_pattern='error')
     else:
         out_file, is_temp = in_file, False
     return out_file, is_temp
@@ -1511,7 +1511,7 @@ def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask
     return outputs
 
 
-def apply_ants(transforms, base_file, in_file, out_file, interp=None, dim=None, image_type=None):
+def apply_ants(transforms, base_file, in_file, out_file, interp=None, dim=None, image_type=None, n_jobs=None):
     '''
     Parameters
     ----------
@@ -1539,6 +1539,8 @@ def apply_ants(transforms, base_file, in_file, out_file, interp=None, dim=None, 
             xform_cmds.append(f"-t [ {transform[:-3]}, 1 ]")
         else:
             xform_cmds.append(f"-t {transform}")
+    if n_jobs is not None:
+        os.environ['ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS'] = str(n_jobs)
     if base_file is None or path.splitext(in_file)[1] in ['.csv']: 
         # Apply transforms to point list (e.g., surface mesh)
         data = np.loadtxt(in_file, skiprows=1, delimiter=',')
@@ -1571,6 +1573,9 @@ def apply_ants(transforms, base_file, in_file, out_file, interp=None, dim=None, 
             os.remove(sanitized_base)
         # Make sure out_file is of the same space as base_file
         io.change_space(outputs['out_file'], space=io.get_space(base_file), method='nibabel') # Causion: Cannot use "afni" here...
+        # Copy afni subbrick labels
+        # This must go last because io.change_space(method='nibabel') will recreate the volume without afni metadata
+        afni.set_brick_labels(outputs['out_file'], afni.get_brick_labels(in_file))
     all_finished(outputs)
     return outputs
 

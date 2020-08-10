@@ -388,6 +388,10 @@ def get_brick_labels(fname, label2index=False):
         return np.array(labels)
 
 
+def set_brick_labels(fname, labels):
+    check_output(['3drefit', '-relabel_all_str', ' '.join(labels), fname])
+
+
 def get_TR(fname):
     return float(check_output(['3dinfo', '-TR', fname])[-2])
 
