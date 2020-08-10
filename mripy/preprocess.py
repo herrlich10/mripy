@@ -901,7 +901,10 @@ def create_hcp_retinotopic_atlas(subj_dir, suma='SUMA', NIFTI=True):
     # Generate benson14 atlas (if necessary)
     subjects_dir, subjid = path.split(subj_dir)
     if not utils.exists(f'{subj_dir}/mri/benson14_varea.mgz'):
-        utils.run(f"docker run -it --rm -v {subjects_dir}:/subjects nben/neuropythy:latest \
+        # To get the correct (old) version of docker image:
+        # $ docker pull nben/neuropythy@sha256:2541ee29a8d6bc676d9c3622ef4a38a258dd90e06c02534996a1c8354f9ac888
+        # $ docker tag b38ebfcf6477 nben/neuropythy:mripy
+        utils.run(f"docker run -it --rm -v {subjects_dir}:/subjects nben/neuropythy:mripy \
             benson14_retinotopy --verbose {subjid}")
     # Convert benson14 atlas to SUMA format
     utils.run(f"mripy_curv2dset.ipy -s {subj_dir} --suma_dir {subj_dir}/{suma} -i benson14")
