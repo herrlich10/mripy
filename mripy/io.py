@@ -784,7 +784,10 @@ def change_space(in_file, out_file=None, space=None, method='nibabel'):
             prefix, ext = afni.split_out_file(in_file)
             out_file = f"{prefix}.nii"
         vol, img = read_vol(in_file, return_img=True)
-        write_nii(out_file, vol, base_img=img, space=space)
+        # write_nii(out_file, vol, base_img=img, space=space)
+        # To work-around a strang bug in nibabel when overwriting an existing volume in linux,
+        # an explicit copy of the memmap has to be made.
+        write_nii(out_file, vol.copy(), base_img=img, space=space)
     elif method == 'afni':
         if space is None:
             space = 1
