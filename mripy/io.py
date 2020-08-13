@@ -572,7 +572,7 @@ def parse_series_info(fname, timestamp=False, shift_time=None, series_pattern=SE
     if shift_time == 'CMRR':
         shift_time = 0
         if info['TR'] is not None and 'n_slices' in info and np.mod(info['n_slices'], 2)==0:
-            slice_order = pares_slice_order(files)[0]
+            slice_order = parse_slice_order(files)[0]
             if slice_order == 'interleaved':
                 shift_time = -info['TR']/2
     elif shift_time is None:
