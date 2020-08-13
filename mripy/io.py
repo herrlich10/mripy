@@ -646,7 +646,8 @@ def convert_dicoms(dicom_dirs, out_dir=None, prefix=None, out_type='.nii', dicom
 # ========== Generic read/write ==========
 def read_vol(fname, return_img=False):
     img = nibabel.load(fname)
-    vol = img.get_data()
+    vol = np.asanyarray(img.dataobj) # Equivalent to the deprecated "vol = img.get_data()" that gives minimum possible data size in memory
+    # vol = img.get_fdata() # get_data() is deprecated in favor of get_fdata(), which has a more predictable return type
     return (vol, img) if return_img else vol
 
 
