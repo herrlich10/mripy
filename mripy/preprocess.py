@@ -1583,6 +1583,22 @@ def apply_ants(transforms, base_file, in_file, out_file, interp=None, dim=None, 
     return outputs
 
 
+def ants2afni_affine(ants_affine, afni_affine):
+    raise NotImplementedError
+
+
+def afni2ants_affine(afni_affine, ants_affine):
+    raise NotImplementedError
+
+
+def ants2afni_warp(ants_warp, afni_warp):
+    raise NotImplementedError
+
+
+def afni2ants_warp(afni_warp, ants_warp):
+    raise NotImplementedError
+
+
 class Transform(object):
     def __init__(self, transforms, base_file=None, source_file=None):
         '''
