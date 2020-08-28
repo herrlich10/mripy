@@ -2017,7 +2017,7 @@ def detrend(motion_file, in_file, out_file, censor=True, motion_th=0.3, censor_f
 def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick_runs=None,
     motion_files=None, censor=True, motion_th=0.3, censor_files=None, 
     regressor_file=None, poly=None,
-    fitts=True, errts=True, REML=True, perblock=False, FDR=None):
+    fitts=True, errts=True, REML=True, perblock=False, FDR=None, check_TR=True):
     '''
     Parameters
     ----------
@@ -2091,7 +2091,13 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
     TRs = np.array([afni.get_TR(f) for f in in_files])
     if TR is None:
         TR = TRs[0]
-    assert(np.allclose(TRs, TR) or np.allclose(TRs, 0)) # TR=0 for 1D files
+    try:
+        assert(np.allclose(TRs, TR) or np.allclose(TRs, 0)) # TR=0 for 1D files
+    except AssertionError as err:
+        if check_TR:
+            raise err
+        else:
+            print(f">> It seems that not all TRs are equal to {TR:.3f} sec: {TRs==TR}")
     # Check run lengths
     # 1D files should be OK if specified as dset.1D\'
     func_lens = np.array([afni.get_dims(f)[3] for f in in_files])
