@@ -1,6 +1,7 @@
 #!/usr/bin/env ipython_wrapper
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
+import os
 from os import path
 import argparse, textwrap, multiprocessing as mp
 
@@ -88,7 +89,7 @@ if __name__ == '__main__':
         pc.wait()
     # Remove the auto-generated *._shft.1D files in current directory
     for dset in args.input:
-        !rm {dset}_shft.1D
+        os.remove("{0}_shft.1D".format(dset))
 
     # Interpolate surface dset according to HD mesh
     if args.mesh is not None:
