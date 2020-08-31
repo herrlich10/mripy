@@ -199,8 +199,10 @@ class PooledCaller(object):
     asynchronously and parallelly across a pool of processes.
     '''
     def __init__(self, pool_size=None, verbose=1):
+        self.ctx = multiprocessing.get_context('fork')
         if pool_size is None:
-            self.pool_size = multiprocessing.cpu_count() * 3 // 4
+            # self.pool_size = multiprocessing.cpu_count() * 3 // 4
+            self.pool_size = self.ctx.cpu_count() * 3 // 4
         else:
             self.pool_size = pool_size
         self.verbose = verbose
@@ -211,7 +213,8 @@ class PooledCaller(object):
         self._pid2job = {} # Hold all jobs for each wait()
         self._log = [] # Hold all jobs across waits (entire execution history for this PooledCaller instance)
         self._fulfilled = {} # Fulfilled dependencies across waits (a faster API compared with self._log)
-        self.res_queue = multiprocessing.Queue() # Queue for return values of executed python callables
+        # self.res_queue = multiprocessing.Queue() # Queue for return values of executed python callables
+        self.res_queue = self.ctx.Queue() # Queue for return values of executed python callables
  
     def run(self, cmd, *args, _depends=None, _retry=None, _dispatch=False, _error_pattern=None, _suppress_warning=False, _block=False, **kwargs):
         '''Asynchronously run command or callable (queued execution, return immediately).
@@ -322,7 +325,8 @@ class PooledCaller(object):
                     print('>> job#{0}: {1}'.format(idx, cmd_for_disp(job['cmd'])))
                 if callable(cmd):
                     # TODO: Add an if-else branch here if shared memory doesn't work for wrapper 
-                    p = multiprocessing.Process(target=self._callable_wrapper, args=(idx, cmd) + args, kwargs=kwargs)
+                    # p = multiprocessing.Process(target=self._callable_wrapper, args=(idx, cmd) + args, kwargs=kwargs)
+                    p = self.ctx.Process(target=self._callable_wrapper, args=(idx, cmd) + args, kwargs=kwargs)
                     p.start()
                 else:
                     # Use PIPE to capture output and error message
@@ -410,7 +414,8 @@ class PooledCaller(object):
                             job.pop(key) 
                     else:
                         pass
-                elif isinstance(p, multiprocessing.Process):
+                # elif isinstance(p, multiprocessing.Process):
+                elif isinstance(p, self.ctx.Process):
                     if not p.is_alive(): # If the process is terminated
                         job['stop_time'] = time.time()
                         job['returncode'] = p.exitcode # subprocess.Popen and multiprocessing.Process use different names for this
@@ -522,6 +527,7 @@ class ArrayWrapper(type):
                     setattr(cls, name, make_descriptor(name))
 
 
+# TODO: 1. Use ctx instead of multiprocessing. 2. Use multiprocessing.shared_memory
 @add_metaclass(ArrayWrapper) # Compatibility code from six
 class SharedMemoryArray(object):
     '''
