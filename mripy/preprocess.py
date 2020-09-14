@@ -2055,7 +2055,7 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
                             break
     def load_txt(in_file, **kwargs):
         fname, begin, end = parse_txt_fname(in_file)
-        return np.loadtxt(fname, **kwargs)[slice(begin, (end+1 if end is not None else end)),:]
+        return np.loadtxt(fname, **kwargs)[slice(begin, (end+1 if end is not None else end))]
     def pick_txt_rows(in_file, pick_runs, out_file):
         if np.array(pick_runs).dtype == bool:
             pick_runs = np.nonzero(pick_runs)[0]
