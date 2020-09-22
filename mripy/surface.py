@@ -471,7 +471,8 @@ class Surface(object):
         out_file : str
             "beta.niml.dset" will automatically generate ["lh.beta.niml.dset", "rh.beta.niml.dset"].
         func : str
-            ave, median, max, midpoint, etc.
+            ave, median, nzmode, max, max_abs, midpoint, etc.
+            The default mapping function used by SUMA GUI is "midpoint", which is fast (and very suitable for ODC map).
         mask_file : str
             Volume mask file.
         truncate : bool
@@ -504,7 +505,7 @@ class Surface(object):
                 -grid_parent {in_file} \
                 {mask_cmd} {truncate_cmd} \
                 -map_func {func} \
-                -f_steps 20 -f_index nodes \
+                {'-f_steps 20' if func != 'midpoint' else ''} -f_index nodes \
                 -f_p1_fr {depth_range[0]} -f_pn_fr {depth_range[1]-1} \
                 -out_niml {fo_niml} {out_1D_cmd} -overwrite", 
                 _error_pattern='error', _suppress_warning=True)
@@ -519,7 +520,8 @@ class Surface(object):
             "beta.niml.dset" will be expanded as ["lh.beta.niml.dset", "rh.beta.niml.dset"],
             whereas "lh.beta.niml.dset" will be treated as is.
         func : str
-            ave, median, mask2, count, etc.
+            ave, median, nzmedian, mode, mask2, count, etc.
+            Note that "median" method can be misleading near ROI border, because missing data (zero) are treated as small values.
         combine : str
             l+r, max(l,r), consistent, mean, lh, rh, etc.
         mask_file : str
