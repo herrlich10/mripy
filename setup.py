@@ -1,7 +1,9 @@
 import setuptools
 import mripy
+from os import path
 
-with open('README.rst', 'r') as f:
+setup_dir = path.dirname(path.realpath(__file__))
+with open(f'{setup_dir}/README.rst', 'r') as f:
     long_description = f.read()
 
 setuptools.setup(
