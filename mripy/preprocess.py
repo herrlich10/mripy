@@ -755,7 +755,7 @@ def average_anat(T1s, out_file, template_idx=0, T1s_ns=None, weight=None):
     return outputs
 
 
-def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=None, V1=True, HCP_atlas=True):
+def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=None, V1=True, HCP_atlas=True, n_jobs=None):
     '''
     Parameters
     ----------
@@ -774,6 +774,8 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=N
         'subj_dir': out_dir,
         'suma_dir': f"{out_dir}/SUMA",
     }
+    if n_jobs is None:
+        n_jobs = DEFAULT_JOBS
     # Setup FreeSurfer SUBJECTS_DIR
     if not path.exists(subjects_dir):
         os.makedirs(subjects_dir)
@@ -788,7 +790,7 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=N
             hires_cmd = f"-hires" if hires else ''
             utils.run(f"recon-all -s {subj} \
                 -autorecon-pial {hires_cmd} \
-                -parallel -openmp {DEFAULT_JOBS}",
+                -parallel -openmp {n_jobs}",
                 error_pattern='', goal_pattern='recon-all .+ finished without error')
         elif fs_ver == 'skip':
             pass
@@ -797,7 +799,7 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=N
             hires_cmd = f"-hires" if hires else ''
             utils.run(f"recon-all -s {subj} \
                 -autorecon2-cp -autorecon2-wm -autorecon-pial {hires_cmd} \
-                -parallel -openmp {DEFAULT_JOBS}",
+                -parallel -openmp {n_jobs}",
                 error_pattern='', goal_pattern='recon-all .+ finished without error')
         elif fs_ver == 'skip':
             pass
@@ -813,7 +815,7 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=N
                 {f'-T2 {T2} -T2pial' if T2 is not None else ''} \
                 {f'-FLAIR {FLAIR} -FLAIRpial' if FLAIR is not None else ''} \
                 -all {hires_cmd} \
-                -parallel -openmp {DEFAULT_JOBS} \
+                -parallel -openmp {n_jobs} \
                 {'-label-v1' if V1 else ''}", 
                 error_pattern='', goal_pattern='recon-all .+ finished without error')
         elif fs_ver == 'v6.hcp':
@@ -823,7 +825,7 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=N
                 {f'-T2 {T2} -T2pial' if T2 is not None else ''} \
                 {f'-FLAIR {FLAIR} -FLAIRpial' if FLAIR is not None else ''} \
                 -all {hires_cmd} \
-                -parallel -openmp {DEFAULT_JOBS} \
+                -parallel -openmp {n_jobs} \
                 {'-label-v1' if V1 else ''}", 
                 error_pattern='', goal_pattern='recon-all .+ finished without error')
         elif fs_ver == 'skip':
