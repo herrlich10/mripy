@@ -755,7 +755,7 @@ def average_anat(T1s, out_file, template_idx=0, T1s_ns=None, weight=None):
     return outputs
 
 
-def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, V1=True, hires=True, fs_ver=None):
+def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=None, V1=True, HCP_atlas=True):
     '''
     Parameters
     ----------
@@ -782,7 +782,7 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, V1=True, hires=True,
         os.symlink(f"{os.environ['FREESURFER_HOME']}/subjects/V1_average", f"{subjects_dir}/V1_average")
     # Run recon-all
     if fs_ver is None:
-        fs_ver = 'v6' # {'v6', 'v6.hcp', 'skip'}
+        fs_ver = 'v6' # {'v7', 'v6', 'v6.hcp', 'skip'}
     if T1s == 'brainmask_edit': # Manual edit brainmask.mgz
         if fs_ver == 'v6':
             hires_cmd = f"-hires" if hires else ''
@@ -806,7 +806,7 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, V1=True, hires=True,
             expert_file = f"{temp_dir}/expert_options.txt"
             with open(expert_file, 'w') as fo:
                 fo.write('mris_inflate -n 30\n')
-        if fs_ver == 'v6':
+        if fs_ver in ['v7', 'v6']:
             hires_cmd = f"-hires -expert {expert_file}" if hires else ''
             utils.run(f"recon-all -s {subj} \
                 {' '.join([f'-i {T1}' for T1 in T1s])} \
@@ -835,8 +835,9 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, V1=True, hires=True,
     create_suma_dir(out_dir, NIFTI=True)
     os.rename(outputs['suma_dir'], outputs['suma_dir']+'_NIFTI')
     os.symlink('SUMA'+('_NIFTI' if NIFTI else '_woNIFTI'), outputs['suma_dir']) # This will create a relative link
-    # Create HCP retinotopic atlas (benson14 template) using docker
-    create_hcp_retinotopic_atlas(out_dir, NIFTI=NIFTI)
+    if HCP_atlas:
+        # Create HCP retinotopic atlas (benson14 template) using docker
+        create_hcp_retinotopic_atlas(out_dir, NIFTI=NIFTI)
 
     shutil.rmtree(temp_dir)
     all_finished(outputs)
@@ -889,7 +890,7 @@ def create_hcp_retinotopic_atlas(subj_dir, suma='SUMA', NIFTI=True):
     and convert the volume and surface datasets into SUMA format.
     '''
     if not utils.has_hcp_retino_docker():
-        print('** Skip HCP retinotopic atlas generation for now...')
+        print('*+ Skip HCP retinotopic atlas generation for now...') # Report as a warning
         return
     subj_dir = path.realpath(subj_dir)
     outputs = {
@@ -2031,6 +2032,24 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
     design : OrderedDict(L=('../stimuli/L.txt', 24), R="../stimuli/R.txt 'BLOCK(24,1)'")
     model : str
     contrasts : OrderedDict([('L+R', '+0.5*L +0.5*R'), ...])
+
+    Examples
+    --------
+    1. Canonical GLM
+        design = OrderedDict()
+        design['L'] = ('../stimuli/L_localizer.txt', 24)
+        design['R'] = ('../stimuli/R_localizer.txt', 24)
+        contrasts = OrderedDict()
+        contrasts['L+R'] = '+0.5*L +0.5*R'
+        contrasts['L-R'] = '+L -R'
+        model = 'BLOCK' 
+
+    2. FIR estimation
+        design = OrderedDict()
+        design['L'] = f"{stim_dir}/L_{condition}_deconv.txt 'CSPLINzero(0,24,11)'"
+        design['R'] = f"{stim_dir}/R_{condition}_deconv.txt 'CSPLINzero(0,24,11)'"
+        contrasts = None
+        model = 'BLOCK' # This is not used for TENT/CSPLIN
     '''
     def parse_txt_fname(in_file):
         # Handle time selection like `dset.1D{0..10}`
@@ -2229,8 +2248,16 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
         utils.run(f"tcsh {temp_dir}/stats.REML_cmd", error_pattern=r'^\*{2}\w')
         copy_dset(f"{temp_dir}/stats_REMLvar{default_ext}", outputs['stats_var'])
         for k, IRF_label in enumerate(IRF_labels):
-            utils.run(f"3dTcat -tr {TR} -prefix {outputs[IRF_label]} -overwrite \
-                {temp_dir}/stats_REML{default_ext}'[{','.join([f'{IRF_label[4:]}#{kk}_Coef' for kk in range(IRF_params[k][3])])}]'")
+            # Select beta values (not t values)
+            L = IRF_params[k][3]
+            try: # Check if there are labels associated with each subbrick
+                afni.get_brick_labels(f"{temp_dir}/stats_REML{default_ext}")
+            except subprocess.CalledProcessError: # There are no label: select subbrick by index (if )
+                utils.run(f"3dTcat -tr {TR} -prefix {outputs[IRF_label]} -overwrite \
+                    {temp_dir}/stats_REML{default_ext}'[{','.join([f'{1+k*2*L+kk*2:d}' for kk in range(L)])}]'")
+            else: # There are labels: select subbrick by label (if )
+                utils.run(f"3dTcat -tr {TR} -prefix {outputs[IRF_label]} -overwrite \
+                    {temp_dir}/stats_REML{default_ext}'[{','.join([f'{IRF_label[4:]}#{kk}_Coef' for kk in range(L)])}]'")
     else:
         for IRF_label in IRF_labels:
             copy_dset(f"{temp_dir}/{IRF_label}{default_ext}", outputs[IRF_label])

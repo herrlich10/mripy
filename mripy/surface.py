@@ -462,7 +462,7 @@ class Surface(object):
     def to_1D_dset(self, prefix, node_values):
         np.savetxt(f"{prefix}.1D.dset", np.c_[np.arange(len(node_values)), node_values], fmt='%.6f')
 
-    def vol2surf(self, in_file, out_file, func='median', depth_range=[0,1], mask_file=None, truncate=True):
+    def vol2surf(self, in_file, out_file, func='median', depth_range=[0,1], vol_mask=None, surf_mask=None, truncate=True):
         '''
         Parameters
         ----------
@@ -488,8 +488,8 @@ class Surface(object):
             does the user want the voxel counted only once (-f_index voxels), 
             or 3 times (-f_index nodes)?  Each way makes sense.
         '''
-        mask_cmd = f"-cmask {mask_file}" if mask_file is not None else ''
-        truncate_cmd = f"-oob_value 0 {'-oom_value 0' if mask_file is not None else ''}" if not truncate else ''
+        mask_cmd = f"-cmask {vol_mask}" if vol_mask is not None else ''
+        truncate_cmd = f"-oob_value 0 {'-oom_value 0' if vol_mask is not None else ''}" if not truncate else ''
         out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True, trailing_slash=True)
         output_1D = '.1D' in ext
         pc = utils.PooledCaller()
@@ -510,6 +510,10 @@ class Surface(object):
                 -out_niml {fo_niml} {out_1D_cmd} -overwrite", 
                 _error_pattern='error', _suppress_warning=True)
         pc.wait()
+        if surf_mask is not None:
+            v = io.read_surf_data(fo_niml)[1]
+            expr = {1: 'a*b', 2: 'a*b.reshape(-1,1)'}[v.ndim]
+            surface_calc(expr, f"{out_dir}{prefix}.niml.dset", a=f"{out_dir}{prefix}.niml.dset", b=surf_mask)
         return pc._log
 
     def surf2vol(self, base_file, in_files, out_file, func='median', combine='mean', depth_range=[0,1], mask_file=None):
@@ -584,6 +588,50 @@ class Surface(object):
             pc.run1(f"3dcalc -a {out_file} -d {depth_file} -expr 'a*step(d)*step(1-d)' \
                 -prefix {out_file} -overwrite")
         return _log + pc._log
+
+    def smooth_surf_data(self, in_files, out_file, method='SurfSmooth', surf_mask=None, **kwargs):
+        '''
+        Parameters
+        ----------
+        in_files : str, list, or dict
+            "beta.niml.dset" will be expanded as {'lh': "lh.beta.niml.dset", 'rh': "rh.beta.niml.dset"},
+            whereas "lh.beta.niml.dset" will be treated as is.
+        out_file : str
+            Should not contain prefix like lh. or rh.
+        method : str
+            - None: factor=0.1, n_iters=1, dtype=None
+            - 'SurfSmooth': fwhm is required
+        '''
+        in_files = afni.infer_surf_dset_variants(in_files, hemis=self.hemis)
+        out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True, trailing_slash=True)
+        if surf_mask is not None:
+            surf_mask = afni.infer_surf_dset_variants(surf_mask, hemis=self.hemis)
+        pc = utils.PooledCaller()
+        for hemi, dset in in_files.items():
+            surf_file = f"{self.suma_dir}/{hemi}.{self.surfs[0]}{self.surf_ext}"
+            output = f"{out_dir}{hemi}.{prefix}.niml.dset"
+            if method is None:
+                raise NotImplementedError
+                # Bug: smooth_verts_data is only correct for whole mesh???
+                def default_method(surf_file, surf_mask, hemi, dset, output, kwargs):
+                    verts, faces = io.read_surf_mesh(surf_file)
+                    n, v = io.read_surf_data(dset)
+                    if surf_mask is not None:
+                        nm, vm = io.read_surf_data(surf_mask[hemi])
+                        ns = np.intersect1d(n, nm[vm!=0]) # Nodes shared by dset and mask
+                    else:
+                        ns = n
+                    sel = np.all(np.c_[np.in1d(faces[:,0], ns), np.in1d(faces[:,1], ns), np.in1d(faces[:,2], ns)], axis=1) # Check which faces are fully contained in the mask
+                    sv = smooth_verts_data(verts, faces[sel], v, **kwargs)
+                    io.write_surf_data(output, n, sv)
+                pc.run(default_method, surf_file, surf_mask, hemi, dset, output, kwargs)
+            elif method.lower() == 'surfsmooth':
+                mask_cmd = f"-b_mask {surf_mask[hemi]}" if surf_mask is not None else ''
+                pc.run(f"SurfSmooth -met HEAT_07 \
+                    -target_fwhm {kwargs['fwhm']} \
+                    -i {surf_file} {mask_cmd} \
+                    -input {dset} -output {output} -overwrite")
+        pc.wait()
 
 
 if __name__ == '__main__':

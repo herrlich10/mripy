@@ -127,11 +127,12 @@ def circular_std(x, domain=None, weight=None, axis=None):
     return std_x
 
 
-def corrcoef_along_axis(x, y, axis=None):
+def corrcoef_along_axis(x, y, axis=None, norm=True):
     x = x - np.mean(x, axis=axis, keepdims=True)
     y = y - np.mean(y, axis=axis, keepdims=True)
-    r = np.sum(x * y.conjugate(), axis=axis) / \
-        np.sqrt(np.sum(x*x.conjugate(), axis=axis) * np.sum(y*y.conjugate(), axis=axis))
+    r = np.sum(x * y.conjugate(), axis=axis)
+    if norm:
+        r /= np.sqrt(np.sum(x*x.conjugate(), axis=axis) * np.sum(y*y.conjugate(), axis=axis))
     return r
 
 

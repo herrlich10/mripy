@@ -1277,6 +1277,18 @@ class Mask(object):
                 mask = mask * mask2
         return mask
 
+    @classmethod
+    def concat(cls, masks):
+        # Check compatible and disjoint
+        for m in masks[1:]:
+            assert(masks[0].compatible(m))
+            assert(len(np.intersect1d(masks[0].index, m.index))==0)
+        # Concat index (in that order)
+        mask = copy.deepcopy(masks[0])
+        mask.index = np.concatenate([m.index for m in masks])
+        mask.value = np.concatenate([m.value for m in masks])
+        return mask
+
     def compatible(self, other):
         return np.all(self.IJK==other.IJK) and np.allclose(self.MAT, other.MAT)
 
@@ -1385,6 +1397,7 @@ class Mask(object):
             S = vol.shape
             T = list(range(vol.ndim))
             T[:3] = T[:3][::-1]
+            # TODO: Need to check compatibility here
             data.append(vol.transpose(*T).reshape(np.prod(S[:3]),int(np.prod(S[3:])))[self.index,:])
         return np.hstack(data).squeeze()
 
