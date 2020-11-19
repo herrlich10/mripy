@@ -763,7 +763,6 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=N
     fs_ver : {'v6', 'v6.hcp', 'skip'}
     '''
     start_time = time.time()
-    assert(utils.has_hcp_retino_docker())
     edits = ['brainmask_edit', 'wm_edit']
     if isinstance(T1s, six.string_types) and T1s not in edits:
         T1s = [T1s]
@@ -839,6 +838,7 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=N
     os.symlink('SUMA'+('_NIFTI' if NIFTI else '_woNIFTI'), outputs['suma_dir']) # This will create a relative link
     if HCP_atlas:
         # Create HCP retinotopic atlas (benson14 template) using docker
+        assert(utils.has_hcp_retino_docker())
         create_hcp_retinotopic_atlas(out_dir, NIFTI=NIFTI)
 
     shutil.rmtree(temp_dir)
