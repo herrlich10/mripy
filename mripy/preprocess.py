@@ -1588,7 +1588,10 @@ def apply_ants(transforms, base_file, in_file, out_file, interp=None, dim=None, 
         io.change_space(outputs['out_file'], space=io.get_space(base_file), method='nibabel') # Causion: Cannot use "afni" here...
         # Copy afni subbrick labels
         # This must go last because io.change_space(method='nibabel') will recreate the volume without afni metadata
-        afni.set_brick_labels(outputs['out_file'], afni.get_brick_labels(in_file))
+        try:
+            afni.set_brick_labels(outputs['out_file'], afni.get_brick_labels(in_file))
+        except: # TODO: In case the file doesn't have labels
+            pass
     all_finished(outputs)
     return outputs
 

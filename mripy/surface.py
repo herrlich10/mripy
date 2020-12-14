@@ -393,10 +393,17 @@ def _surface_calc(expr=None, out_file=None, **kwargs):
 
 
 def surface_calc(expr=None, out_file=None, **kwargs):
-    out_file = afni.infer_surf_dset_variants(out_file)
+    out_file = afni.infer_surf_dset_variants(out_file, hemis=['lh', 'rh'])
     kwargs = {k: afni.infer_surf_dset_variants(v) for k, v in kwargs.items()}
-    for hemi in ['lh', 'rh']:
+    for hemi in out_file.keys(): # Only deal with available hemis
         _surface_calc(expr=expr, out_file=out_file[hemi], **{k: v[hemi] for k, v in kwargs.items()})
+
+
+def surface_read(in_file):
+    in_file = afni.infer_surf_dset_variants(in_file)
+    f = lambda data, k: (data[0], data[1], k*np.ones(len(data[0])))
+    n, v, h = zip(*[f(io.read_surf_data(in_file[hemi]), k) for k, hemi in enumerate(['lh', 'rh'])])
+    return np.concatenate(n), np.concatenate(v), np.concatenate(h) # axis=0
 
 
 class SurfMask(object):
