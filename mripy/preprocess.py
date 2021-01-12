@@ -2199,9 +2199,15 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
         if perblock:
             stim_cmd = f"-stim_times_IM {total_regressors} "
         else:
-            stim_cmd = f"-stim_times {total_regressors} "
+            if isinstance(timing, six.string_types) and ('dmUBLOCK' in shlex.split(timing)[1]):
+                # For 'dmUBLOCK', e.g., in the transient-sustain model
+                # TODO: Need to add -stim_times_AM2
+                stim_cmd = f"-stim_times_AM1 {total_regressors} "
+            else:
+                stim_cmd = f"-stim_times {total_regressors} "
         stim_file_picked = f"{temp_dir}/stim_{condition}.txt"
         if isinstance(timing, six.string_types):
+            # Forward complex model spec (as str) for TENT, dmUBLOCK, etc.
             stim_file, model_spec = shlex.split(timing)
             pick_txt_rows(stim_file, pick_runs, stim_file_picked)
             stim_cmd += ' '.join([stim_file_picked, model_spec])

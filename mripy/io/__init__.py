@@ -9,7 +9,7 @@ from os import path
 from datetime import datetime
 import numpy as np
 from scipy import ndimage
-from . import six, utils, afni, math, paraproc
+from .. import six, utils, afni, math, paraproc
 # For accessing NIFTI files
 try:
     import nibabel
