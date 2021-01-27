@@ -12,11 +12,25 @@ def read_fs_uint24(fi):
     return np.sum(np.fromfile(fi, dtype='uint8', count=3) * 256**np.array([2,1,0]))
 
 
+def write_fs_uint24(fo, x):
+    '''
+    Write big endian 3-byte unsigned integer to opened binary file.
+    '''
+    fo.write(np.array(x).astype('>u4').tobytes()[1:])
+
+
 def read_fs_int32(fi):
     '''
     Read big endian 4-byte integer from opened binary file.
     '''
     return np.fromfile(fi, dtype='>i4', count=1)[0]
+
+
+def write_fs_int32(fo, x):
+    '''
+    Write big endian 4-byte integer to opened binary file.
+    '''
+    np.array(x).astype('>i4').tofile(fo)
 
 
 def read_fs_str(fi):
@@ -134,6 +148,30 @@ def read_fs_curv(fname):
         # Sanity check
         assert(len(curv)==vnum)
         return curv
+
+
+def write_fs_curv(fname, curv):
+    '''
+    Write FreeSurfer surface data binary file (big endian).
+
+    Parameters
+    ----------
+    curv : 1D array like
+        Surface data, each vertex must have one and only one value.
+
+    Only support writing in the new binary version.
+    '''
+    vnum = curv.shape[0]
+    fnum = 0
+    vals_per_vertex = 1
+    assert(curv.shape==(vnum,))
+    magic = 16777215
+    with open(fname, 'wb') as fo:
+        write_fs_uint24(fo, magic)
+        write_fs_int32(fo, vnum)
+        write_fs_int32(fo, fnum)
+        write_fs_int32(fo, vals_per_vertex)
+        curv.astype('>f4').tofile(fo)
 
 
 def read_fs_annotation(fname, return_df=False):
