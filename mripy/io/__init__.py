@@ -9,7 +9,7 @@ from os import path
 from datetime import datetime
 import numpy as np
 from scipy import ndimage
-from .. import six, utils, afni, math, paraproc
+from .. import six, utils, afni, math, paraproc, _with_pylab
 # For accessing NIFTI files
 try:
     import nibabel
@@ -1260,7 +1260,8 @@ class Mask(object):
         mask.master = master
         mask._infer_geometry(master)
         data = {v: read_vol(f).squeeze() for v, f in kwargs.items()}
-        idx = eval(expr, data).ravel('F') > 0
+        # idx = eval(expr, data).ravel('F') > 0
+        idx = _with_pylab.pylab_eval(expr, **data).ravel('F') > 0
         mask.index = np.arange(np.prod(mask.IJK))[idx]
         return mask
 

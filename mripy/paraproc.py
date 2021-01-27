@@ -114,7 +114,7 @@ def cmd_for_disp(cmd):
 ERROR_PATTERN = r'error|^\*{2}\s'
 
 
-def check_output_for_errors(output, error_pattern=None, verbose=1, label=''):
+def check_output_for_errors(output, error_pattern=None, error_whitelist=None, verbose=1, label=''):
     '''
     User can skip error checking by setting error_pattern=''
     '''
@@ -124,8 +124,10 @@ def check_output_for_errors(output, error_pattern=None, verbose=1, label=''):
     if error_pattern != '': # User can skip error checking by setting error_pattern=''
         if isinstance(error_pattern, string_types): # User can provide compiled regex if case sensitivity is desired
             error_pattern = re.compile(error_pattern, re.IGNORECASE)
+        if isinstance(error_whitelist, string_types):
+            error_whitelist = re.compile(error_whitelist, re.IGNORECASE)
         for line in output:
-            if error_pattern.search(line):
+            if error_pattern.search(line) and (error_whitelist is None or not error_whitelist.search(line)):
                 if verbose > 0:
                     print(label, line, end='')
                 n_errors += 1
@@ -143,7 +145,7 @@ def check_output_for_goal(output, goal_pattern=None):
     return False
 
 
-def run(cmd, check=True, error_pattern=None, goal_pattern=None, shell=False, verbose=2):
+def run(cmd, check=True, error_pattern=None, error_whitelist=None, goal_pattern=None, shell=False, verbose=2):
     '''Run an external command line.
     
     This function is similar to subprocess.run introduced in Python 3.5, but
@@ -168,7 +170,8 @@ def run(cmd, check=True, error_pattern=None, goal_pattern=None, shell=False, ver
     res['stop_time'] = time.time()
     if verbose > 0:
         print('>> Command finished in {0}.'.format(format_duration(res['stop_time'] - res['start_time'])))
-    if check and (res['returncode'] or check_output_for_errors(res['output'], error_pattern=error_pattern, verbose=verbose)):
+    if check and (res['returncode'] or check_output_for_errors(res['output'], error_pattern=error_pattern, 
+                                           error_whitelist=error_whitelist, verbose=verbose)):
         print('>> Please pay attention to the above errors.')
         raise RuntimeError(f'Error occurs when executing the following command (returncode={p.returncode}):\n{cmd_str}')
     if check and not check_output_for_goal(res['output'], goal_pattern=goal_pattern):
@@ -216,7 +219,7 @@ class PooledCaller(object):
         # self.res_queue = multiprocessing.Queue() # Queue for return values of executed python callables
         self.res_queue = self.ctx.Queue() # Queue for return values of executed python callables
  
-    def run(self, cmd, *args, _depends=None, _retry=None, _dispatch=False, _error_pattern=None, _suppress_warning=False, _block=False, **kwargs):
+    def run(self, cmd, *args, _depends=None, _retry=None, _dispatch=False, _error_pattern=None, _error_whitelist=None, _suppress_warning=False, _block=False, **kwargs):
         '''Asynchronously run command or callable (queued execution, return immediately).
         
         See subprocess.Popen() for more information about the arguments.
@@ -263,7 +266,8 @@ class PooledCaller(object):
         _uuid = uuid.uuid4().hex[:8]
         if _retry is None:
             _retry = 0
-        self.cmd_queue.append((self._n_cmds, cmd, args, kwargs, _uuid, _depends, _retry, _error_pattern, _suppress_warning))
+        self.cmd_queue.append((self._n_cmds, cmd, args, kwargs, _uuid, _depends, _retry, 
+            _error_pattern, _error_whitelist, _suppress_warning))
         self._n_cmds += 1 # Accumulate by each call to run(), and reset after wait()
         if _dispatch:
             self.dispatch()
@@ -271,8 +275,9 @@ class PooledCaller(object):
             self.wait()
         return _uuid
 
-    def run1(self, cmd, *args, _error_pattern=None, _suppress_warning=False, **kwargs):
-        self.run(cmd, *args, _error_pattern=_error_pattern, _suppress_warning=_suppress_warning, **kwargs)
+    def run1(self, cmd, *args, _error_pattern=None, _error_whitelist=None, _suppress_warning=False, **kwargs):
+        self.run(cmd, *args, _error_pattern=_error_pattern, _error_whitelist=_error_whitelist, 
+            _suppress_warning=_suppress_warning, **kwargs)
         return self.wait()
 
     def _callable_wrapper(self, idx, cmd, *args, **kwargs):
@@ -315,11 +320,11 @@ class PooledCaller(object):
         # If there are free slot and more jobs
         # while len(self.ps) < self.pool_size and len(self.cmd_queue) > 0:
         if len(self.ps) < self.pool_size and len(self.cmd_queue) > 0:
-            idx, cmd, args, kwargs, _uuid, _depends, _retry, _error_pattern, _suppress_warning = self.cmd_queue.pop(0)
+            idx, cmd, args, kwargs, _uuid, _depends, _retry, _error_pattern, _error_whitelist, _suppress_warning = self.cmd_queue.pop(0)
             if _depends is None or all([dep in self._fulfilled for dep in _depends]): # No dependency or all fulfilled
                 # Create a job process only after it is popped from the queue
                 job = {'idx': idx, 'cmd': cmd, 'args': args, 'kwargs': kwargs, 'uuid':  _uuid, 
-                    'depends': _depends, 'retry': _retry, 'error_pattern': _error_pattern , 
+                    'depends': _depends, 'retry': _retry, 'error_pattern': _error_pattern, 'error_whitelist': _error_whitelist, 
                     'suppress_warning': _suppress_warning, 'output': []} 
                 if self.verbose > 0:
                     print('>> job#{0}: {1}'.format(idx, cmd_for_disp(job['cmd'])))
@@ -345,7 +350,7 @@ class PooledCaller(object):
                 self._pid2job[p.pid] = job
                 self._log.append(job)
             else: # Re-queue the job whose dependencies are not fully fulfilled to the END of the queue
-                self.cmd_queue.append((idx, cmd, args, kwargs, _uuid, _depends, _retry, _error_pattern, _suppress_warning))
+                self.cmd_queue.append((idx, cmd, args, kwargs, _uuid, _depends, _retry, _error_pattern, _error_whitelist, _suppress_warning))
 
     def _async_get_res(self, res_list):
         try:
@@ -473,7 +478,9 @@ class PooledCaller(object):
         # Check return codes
         all_zero = not np.any([job['returncode'] for job in jobs])
         # Check output
-        n_errors = sum([check_output_for_errors(job['output'], error_pattern=job['error_pattern'], verbose=verbose, label='[job#{0}]'.format(job['idx'])) for job in jobs])
+        n_errors = sum([check_output_for_errors(job['output'], error_pattern=job['error_pattern'], 
+            error_whitelist=job['error_whitelist'], verbose=verbose, label='[job#{0}]'.format(job['idx'])) 
+            for job in jobs])
         return all_zero and n_errors == 0
 
     def idss(self, total, batch_size=None):

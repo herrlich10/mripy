@@ -29,6 +29,107 @@ def map_sequence(seq1, seq2):
     return mapper
 
 
+def create_surf_patch(verts, faces, selected_nodes, return_boundary=False):
+    # Keep only selected verts and faces
+    # A face is selected if all of its three nodes are selected.
+    # `selected_nodes` is assumed to be sorted.
+    patch_verts = verts[selected_nodes]
+    patch_faces = faces[np.in1d(faces[:,0], selected_nodes) & \
+                        np.in1d(faces[:,1], selected_nodes) & \
+                        np.in1d(faces[:,2], selected_nodes)]
+    # Renumber vertex indices from zero for faces
+    mapper = -np.ones(len(verts), dtype=int)
+    mapper[selected_nodes] = np.arange(len(selected_nodes)) # mapper: old index -> new zero-based index
+    patch_faces = mapper[patch_faces] # Vertices use zero-based index
+    # Find boundary
+    boundary = boundary_nodes(verts, faces, selected_nodes)
+    patch_boundary = mapper[boundary]
+    if return_boundary:
+        return patch_verts, patch_faces, patch_boundary
+    else:
+        return patch_verts, patch_faces
+
+
+def boundary_nodes(verts, faces, selected_nodes, connected=True):
+    neighbors = immediate_neighbors(verts, faces)
+    region = set(selected_nodes)
+    interior = np.array([neighbor.issubset(region) for neighbor in neighbors[selected_nodes]])
+    boundary = selected_nodes[~interior]
+    if connected:
+        def tracing(n0, candidates):
+            if len(candidates) == 1:
+                n1 = candidates.pop()
+                if n1 in neighbors[n0]:
+                    return [n0, n1]
+                else:
+                    return []
+            else:
+                n1s = list(neighbors[n0].intersection(candidates))
+                if len(n1s) == 0:
+                    return []
+                else:
+                    for n1 in n1s:
+                        line = tracing(n1, candidates.difference({n1}))
+                        if line:
+                            return [n0] + line
+                    else:
+                        return []
+        boundary = tracing(boundary[0], set(boundary[1:]))
+    return boundary
+
+
+def compute_geodesic_distance(surf_file, node1, node2):
+    temp_dir = utils.temp_folder()
+    if np.isscalar(node1):
+        np.savetxt(f"{temp_dir}/nodelist.1D", node2, fmt='%d')
+        node1_cmd = f"-from_node {node1}"
+    else:
+        assert(len(node1)==len(node2))
+        np.savetxt(f"{temp_dir}/nodelist.1D", np.c_[node1, node2], fmt='%d')
+        node1_cmd = ''
+    # Skip error checking for:
+    # 1) The *.gii read error
+    # 2) .Try another point.ERROR SUMA_Dijkstra:
+    utils.run(f"SurfDist -i {surf_file} {node1_cmd} -input {temp_dir}/nodelist.1D > {temp_dir}/out.1D", 
+        shell=True, error_whitelist='ERROR SUMA_Dijkstra')
+    dist = np.loadtxt(f"{temp_dir}/out.1D")[:,2] # from, to, dist
+    shutil.rmtree(temp_dir)
+    return dist
+
+
+def create_equidistance_contour(verts, faces, dist, level):
+    # Greedily find non-previous min dist neighbor: Failed with triangular cycle
+    # Greedily find roughly-same-direction (dot>0) min dist neighbor: Failed with n-cycle (n>3)
+    raise NotImplementedError
+    # Find an initial node
+    n00 = np.argmin(np.abs(dist - level))
+    contour = [n00]
+    n0 = n00
+    prev = n00
+    neighbors = immediate_neighbors(verts, faces)
+    while True:
+        print(n0)
+        nb_set = neighbors[n0]
+        if prev in nb_set:
+            nb_set.remove(prev)
+        while True:
+            nb_list = list(nb_set)
+            n1 = nb_list[np.argmin(np.abs(dist[nb_list] - level))]
+            print(nb_list, n1, len(contour))
+            if np.dot(verts[n1] - verts[n0], verts[n0] - verts[prev]) > 0 or len(contour) == 1:
+                # Moving roughly in the same direction
+                break
+            else: # Moving backwards
+                nb_set.remove(n1)
+        contour.append(n1)
+        if n1 == n00 or len(contour)>500:
+            break
+        else:
+            prev = n0
+            n0 = n1
+    return np.array(contour)
+
+
 def quadruple_mesh(verts, faces, power=1, mask=None, values=[]):
     '''
     A face will be divided if any of its three nodes are within the mask.
@@ -73,7 +174,7 @@ def immediate_neighbors(verts, faces, return_array=False):
     #     faces[faces[:,2]==idx,:2].ravel()]) for idx in range(verts.shape[0])]
     # The above code is unreasonably slow...
     n_verts = verts.shape[0]
-    neighbors = [set() for _ in range(n_verts)] # Don't use [set()]*n_verts
+    neighbors = np.array([set() for _ in range(n_verts)]) # Don't use [set()]*n_verts
     for face in faces:
         neighbors[face[0]].update(face[1:])
         neighbors[face[1]].update(face[::2])
