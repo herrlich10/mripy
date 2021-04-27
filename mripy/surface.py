@@ -29,7 +29,7 @@ def map_sequence(seq1, seq2):
     return mapper
 
 
-def create_surf_patch(verts, faces, selected_nodes, return_boundary=False):
+def create_surf_patch(verts, faces, selected_nodes, return_boundary=False, **kwargs):
     # Keep only selected verts and faces
     # A face is selected if all of its three nodes are selected.
     # `selected_nodes` is assumed to be sorted.
@@ -42,9 +42,9 @@ def create_surf_patch(verts, faces, selected_nodes, return_boundary=False):
     mapper[selected_nodes] = np.arange(len(selected_nodes)) # mapper: old index -> new zero-based index
     patch_faces = mapper[patch_faces] # Vertices use zero-based index
     # Find boundary
-    boundary = boundary_nodes(verts, faces, selected_nodes)
-    patch_boundary = mapper[boundary]
     if return_boundary:
+        boundary = boundary_nodes(verts, faces, selected_nodes, **kwargs)
+        patch_boundary = mapper[boundary]
         return patch_verts, patch_faces, patch_boundary
     else:
         return patch_verts, patch_faces
@@ -74,7 +74,10 @@ def boundary_nodes(verts, faces, selected_nodes, connected=True):
                             return [n0] + line
                     else:
                         return []
+        unsorted = boundary
         boundary = tracing(boundary[0], set(boundary[1:]))
+        if len(boundary) == 0 and connected == 'auto':
+            boundary = unsorted
     return boundary
 
 
@@ -87,12 +90,12 @@ def compute_geodesic_distance(surf_file, node1, node2):
         assert(len(node1)==len(node2))
         np.savetxt(f"{temp_dir}/nodelist.1D", np.c_[node1, node2], fmt='%d')
         node1_cmd = ''
-    # Skip error checking for:
-    # 1) The *.gii read error
+    # Whitelist error checking for:
+    # 1) ** DA[1] has coordsys with intent NIFTI_INTENT_TRIANGLE (should be NIFTI_INTENT_POINTSET)
     # 2) .Try another point.ERROR SUMA_Dijkstra:
     utils.run(f"SurfDist -i {surf_file} {node1_cmd} -input {temp_dir}/nodelist.1D > {temp_dir}/out.1D", 
-        shell=True, error_whitelist='ERROR SUMA_Dijkstra')
-    dist = np.loadtxt(f"{temp_dir}/out.1D")[:,2] # from, to, dist
+        shell=True, error_whitelist=r'\*\* DA\[1\] has coordsys|ERROR SUMA_Dijkstra')
+    dist = np.atleast_2d(np.loadtxt(f"{temp_dir}/out.1D"))[:,2] # from, to, dist
     shutil.rmtree(temp_dir)
     return dist
 
