@@ -212,7 +212,7 @@ def correct_motion(base_file, in_file, out_file, algorithm='3dvolreg', mode='rig
             utils.run(f"3dvolreg -base {base_file} \
                 -verbose -zpad 2 \
                 -1Dfile {outputs['param_file']} -1Dmatrix_save {outputs['xform_file']} \
-                -prefix {out_file} -overwrite {in_file}")
+                -prefix {out_file} -overwrite {in_file}", error_whitelist=r'\*\* Warning: overwriting file')
         else:
             raise ValueError('Valid mode includes {"rigid"} for "3dvolreg" algorithm.')
     elif algorithm.lower() == '3dallineate':
@@ -1075,12 +1075,17 @@ def create_extent_mask(transforms, base_file, in_files, out_file):
     shutil.rmtree(temp_dir)
 
 
-def create_brain_mask(in_files, out_file):
+def create_brain_mask(in_files, out_file, clfrac=None):
+    '''
+    clfrac : float, between 0.1 and 0.9, [default=0.5]
+        A small 'clip level fraction' will tend to make the mask larger. 
+    '''
     pc = utils.PooledCaller()
     temp_dir = utils.temp_folder()
     temp_prefixs = [path.join(temp_dir, afni.split_out_file(in_file, split_path=True)[1]) for in_file in in_files]
     # Create brain mask of each run
-    pc(pc.run(f"3dAutomask -dilate 1 -prefix {prefix}.brain.nii -overwrite {in_file}") \
+    clfrac_cmd = '' if clfrac is None else f"-clfrac {clfrac}"
+    pc(pc.run(f"3dAutomask -dilate 1 {clfrac_cmd} -prefix {prefix}.brain.nii -overwrite {in_file}") \
         for in_file, prefix in zip(in_files, temp_prefixs))
     # Compute union across runs
     utils.run(f"3dTstat -max -prefix {out_file} -overwrite '{' '.join(sorted(glob.glob(f'{temp_dir}/*.brain.nii')))}'")
@@ -2037,6 +2042,8 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
     design : OrderedDict(L=('../stimuli/L.txt', 24), R="../stimuli/R.txt 'BLOCK(24,1)'")
     model : str
     contrasts : OrderedDict([('L+R', '+0.5*L +0.5*R'), ...])
+    pick_runs : array-like
+        Indices of the runs you want to pick for analysis (start from zero)
 
     Examples
     --------

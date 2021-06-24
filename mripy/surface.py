@@ -1,4 +1,4 @@
-    #!/usr/bin/env python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
 import os, shutil, ctypes, multiprocessing
@@ -133,6 +133,29 @@ def create_equidistance_contour(verts, faces, dist, level):
     return np.array(contour)
 
 
+def grow_region_from_point(verts, faces, size, center, measure='nodes', neighbors=None):
+    if neighbors is None:
+        neighbors = immediate_neighbors(verts, faces)
+    region = set()
+    next_verts = [center]
+    while len(region) < size or len(next_verts) == 0:
+        n0 = next_verts.pop(0)
+        next_verts.extend(neighbors[n0].difference(region.union(set(next_verts))))
+        region.add(n0)
+    return np.array(sorted(region))
+
+
+def tile_with_regions(verts, faces, size, seed=0):
+    neighbors = immediate_neighbors(verts, faces)
+    region = grow_region_from_point(verts, faces, size, seed, neighbors=neighbors)
+    boundary = boundary_nodes(verts, faces, region, connected=True)
+    # n_seeds = np.ceil(len(boundary) / np.sqrt(len(region)/np.pi))
+    # gap = int(np.floor(len(boundary) / n_seeds))
+    # seeds = boundary[0::gap]
+    return region, boundary
+    raise NotImplementedError
+
+
 def quadruple_mesh(verts, faces, power=1, mask=None, values=[]):
     '''
     A face will be divided if any of its three nodes are within the mask.
@@ -164,8 +187,9 @@ def quadruple_mesh(verts, faces, power=1, mask=None, values=[]):
     return np.array(verts), np.array(faces)
 
 
-def immediate_neighbors(verts, faces, return_array=False):
+def immediate_neighbors(verts, faces, mask=None, return_array=False):
     '''
+    For each node, return its immediate neighboring nodes within the mask.
     By default, neighbors are represented as a list of sets:
         [set([n00, n01, ...]), set([n10, n11, ...]), ...]
     If return_array=True, a numpy array with a special schema is returned
@@ -178,10 +202,18 @@ def immediate_neighbors(verts, faces, return_array=False):
     # The above code is unreasonably slow...
     n_verts = verts.shape[0]
     neighbors = np.array([set() for _ in range(n_verts)]) # Don't use [set()]*n_verts
+    if mask is not None:
+        # Only consider faces with at least two nodes in the mask
+        faces = faces[np.in1d(faces[:,0], mask).astype(int) + \
+                      np.in1d(faces[:,1], mask).astype(int) + \
+                      np.in1d(faces[:,2], mask).astype(int) > 1]
     for face in faces:
         neighbors[face[0]].update(face[1:])
         neighbors[face[1]].update(face[::2])
         neighbors[face[2]].update(face[:2])
+    if mask is not None:
+        mask = set(mask)
+        neighbors = np.array([nb.intersection(mask) for nb in neighbors])
     if return_array: # For shared memory parallelism
         n_nb = [len(nbhd) for nbhd in neighbors]
         shared_arr = multiprocessing.Array(ctypes.c_int32, n_verts*(max(n_nb)+1), lock=False)
@@ -467,7 +499,7 @@ def dset2roi(f_dset, f_roi=None, colors=None):
             fmt=['%d', '%d', '%.6f', '%.6f', '%.6f'])
 
 
-def _surface_calc(expr=None, out_file=None, **kwargs):
+def _surface_calc(expr=None, out_file=None, _consider_all=False, **kwargs):
     '''
     Different input dsets are allowed to have different nodes coverage.
     Only values on shared nodes are returned or written.
@@ -476,7 +508,7 @@ def _surface_calc(expr=None, out_file=None, **kwargs):
     variables = {}
     shared_nodes = None
     for var, fname in kwargs.items():
-        if var in used: # Only consider used variables in `expr`
+        if var in used or _consider_all: # Only consider used variables in `expr`
             nodes, values = io.read_surf_data(fname)
             variables[var] = (nodes, values)
             if shared_nodes is None:
@@ -537,6 +569,10 @@ class SurfMask(object):
             assert(np.all(n[shared]==self.nodes)) # Make sure nodes order are correspondent
             values.append(v[shared])
         return np.array(values).T.squeeze()
+
+    def to_file(self, fname):
+        io.write_surf_data(fname, self.nodes, np.ones(len(self.nodes)))
+
 
 
 class Surface(object):

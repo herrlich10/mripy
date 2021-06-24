@@ -1246,6 +1246,9 @@ class Mask(object):
     def to_dict(self):
         return dict(master=self.master, value=self.value, index=self.index, IJK=self.IJK, MAT=self.MAT)
 
+    def to_file(self, fname):
+        self.undump(fname, np.ones(len(self.index), dtype=np.float32))
+
     @classmethod
     def from_dict(cls, d):
         self = cls(None)
@@ -1295,6 +1298,10 @@ class Mask(object):
 
     def __repr__(self):
         return 'Mask ({0} voxels)'.format(len(self.index))
+
+    def __len__(self):
+        '''Number of voxels in the mask'''
+        return len(self.index)
 
     def __add__(self, other):
         '''Mask union. Both masks are assumed to share the same grid.'''
@@ -1405,7 +1412,7 @@ class Mask(object):
     def undump(self, prefix, x, method='nibabel', space=None):
         if method == 'nibabel': # Much faster
             temp_file = 'tmp.%s.nii' % next(tempfile._get_candidate_names())
-            vol = np.zeros(self.IJK) # Don't support int64?？
+            vol = np.zeros(self.IJK, dtype=x.dtype) # Don't support int64?？
             assert(self.index.size==x.size)
             vol.T.flat[self.index] = x
             mat = np.dot(np.diag([-1,-1, 1]), self.MAT) # AFNI uses DICOM's RAI, but NIFTI uses LPI aka RAS+
