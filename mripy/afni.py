@@ -396,6 +396,22 @@ def get_TR(fname):
     return float(check_output(['3dinfo', '-TR', fname])[-2])
 
 
+def get_slice_timing(fname):
+    res = check_output(['3dinfo', '-slice_timing', fname])[-2]
+    times = np.float_(res.split('|'))
+    return times
+
+
+def set_slice_timing(fname, times, TR):
+    '''
+    We have to provide a TR because we don't know whether the default value TR=1.0 is valid.
+    '''
+    n_slices = get_dims(fname)[2]
+    assert(len(times)==n_slices)
+    times_cmd = [str(t) for t in times] # This has to be provided as separate arguments
+    check_output(['3drefit', '-Tslices'] + times_cmd + ['-TR', str(TR), fname])
+
+
 def get_attribute(fname, name, type=None):
     res = check_output(['3dAttribute', name, fname])[-2]
     if type == 'int':
