@@ -663,7 +663,7 @@ class Surface(object):
             surface_calc(expr, f"{out_dir}{prefix}.niml.dset", a=f"{out_dir}{prefix}.niml.dset", b=surf_mask)
         return pc._log
 
-    def surf2vol(self, base_file, in_files, out_file, func='median', combine='mean', depth_range=[0,1], mask_file=None):
+    def surf2vol(self, base_file, in_files, out_file, func='median', combine='mean', depth_range=[0,1], mask_file=None, data_expr=None):
         '''
         Parameters
         ----------
@@ -672,11 +672,14 @@ class Surface(object):
             whereas "lh.beta.niml.dset" will be treated as is.
         func : str
             ave, median, nzmedian, mode, mask2, count, etc.
+            For mask2, `in_files` can be ''.
             Note that "median" method can be misleading near ROI border, because missing data (zero) are treated as small values.
         combine : str
             l+r, max(l,r), consistent, mean, lh, rh, etc.
         mask_file : str
             Volume mask file.
+        data_expr : str
+            a-z refer to the first 26 columns in the input dset. See AFNI help.
 
         About "-f_index nodes"
         ----------------------
@@ -691,14 +694,18 @@ class Surface(object):
         pc = utils.PooledCaller()
         for hemi, dset in in_files.items():
             prefix, ext = afni.split_out_file(dset)
-            input_cmd = f"-sdata_1D {dset}" if '.1D' in ext else f"-sdata {dset}"
+            if prefix in ['lh.', 'rh.']:
+                input_cmd = ''
+            else:
+                input_cmd = f"-sdata_1D {dset}" if '.1D' in ext else f"-sdata {dset}"
+            expr_cmd = '' if data_expr is None else f"-data_expr '{data_expr}'"
             pc.run(f"3dSurf2Vol \
                 -spec {self.specs[hemi]} \
                 -surf_A smoothwm \
                 -surf_B pial \
                 -sv {self.surf_vol} \
                 -grid_parent {base_file} \
-                {input_cmd} {mask_cmd} \
+                {input_cmd} {expr_cmd} {mask_cmd} \
                 -map_func {func} \
                 -datum float \
                 -f_steps 20 -f_index nodes \
