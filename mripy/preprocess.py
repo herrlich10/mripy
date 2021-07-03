@@ -94,6 +94,28 @@ def all_finished(outputs):
     return finished
 
 
+def count_outliers(in_file, out_file=None, censor_file=None, th=0.1):
+    '''
+    Compute outlier voxel fraction for each volume.
+
+    Censor (=0, excluded from further analysis) a volume when 
+    too many voxels (default>10%) within the automask are outliers.
+    '''
+    prefix, ext = afni.split_out_file(in_file)
+    outputs = {
+        'out_file': f"{prefix}.outlier.1D" if out_file is None else out_file,
+        'censor_file': f"{prefix}.outlier_censor.1D" if censor_file is None else censor_file,
+    }
+    utils.run(f"3dToutcount -automask -fraction -polort 3 -legendre {in_file} > {outputs['out_file']}", shell=True)
+    utils.run(f"1deval -a {outputs['out_file']} -expr '1-step(a-{th})' > {outputs['censor_file']}", shell=True)
+    # Confirm steady-state at the beginning of EPI time series
+    n_out = np.loadtxt(outputs['out_file'])[0]
+    if n_out > 0.05:
+        raise RuntimeError(f"** Too many ({n_out*100:.2f}%) outliers at the first TR: possible pre-steady state TRs in {in_file}")
+    all_finished(outputs)
+    return outputs
+
+
 def calculate_min_patch(fname, warp_res=10):
     '''
     warp_res : float
@@ -104,7 +126,7 @@ def calculate_min_patch(fname, warp_res=10):
     return min_patch
 
 
-def blip_unwarp(forward_file, reverse_file, reverse_loc, out_file, PE_axis='AP', min_patch=None):
+def blip_unwarp(forward_file, reverse_file, reverse_loc, out_file, PE_axis='AP', min_patch=None, pre_blur=None):
     '''
     abin/unWarpEPI.py do this through: unwarp estimate (before tshift) > tshift > unwarp apply > motion correction > concat apply
     '''
@@ -118,6 +140,8 @@ def blip_unwarp(forward_file, reverse_file, reverse_loc, out_file, PE_axis='AP',
         'QC_reverse_file': f"{out_dir}QC.{prefix}.reverse{ext}",
         'template_idx': None,
     }
+    if pre_blur == 'auto':
+        pre_blur = min(abs(afni.get_DELTA(forward_file)))
 
     # Prepare forward template
     n_subs = 5
@@ -131,6 +155,8 @@ def blip_unwarp(forward_file, reverse_file, reverse_loc, out_file, PE_axis='AP',
         utils.run(f"3dTstat -median -prefix {temp_dir}/forward.nii -overwrite {temp_dir}/forwards.nii")
     else:
         utils.run(f"3dcopy {temp_dir}/forwards.nii {temp_dir}/forward.nii -overwrite ")
+    if pre_blur:
+        utils.run(f"3dmerge -1blur_fwhm {pre_blur} -doall -prefix {temp_dir}/forward.nii -overwrite {temp_dir}/forward.nii")
     utils.run(f"3dAutomask -apply_prefix {temp_dir}/forward.masked.nii -overwrite {temp_dir}/forward.nii")
 
     # Prepare reverse template
@@ -145,6 +171,8 @@ def blip_unwarp(forward_file, reverse_file, reverse_loc, out_file, PE_axis='AP',
         utils.run(f"3dTstat -median -prefix {temp_dir}/reverse.nii -overwrite {temp_dir}/reverses.nii")
     else:
         utils.run(f"3dcopy {temp_dir}/reverses.nii {temp_dir}/reverse.nii -overwrite ")
+    if pre_blur:
+        utils.run(f"3dmerge -1blur_fwhm {pre_blur} -doall -prefix {temp_dir}/reverse.nii -overwrite {temp_dir}/reverse.nii")
     utils.run(f"3dAutomask -apply_prefix {temp_dir}/reverse.masked.nii -overwrite {temp_dir}/reverse.nii")
     
     # Estimate nonlinear midpoint transform
@@ -405,7 +433,8 @@ def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kw
     Parameters
     ----------
     blip_results : list or dict
-        E.g., {'warp_file': '*.volreg.warp.nii', 'blip_file': '*.volreg.blip.nii'}
+        E.g., 1) {'warp_file': '*.volreg.warp.nii', 'blip_file': '*.volreg.blip.nii'}
+        2) {'warf_file': 'epi01.for2mid.warp.nii'}
     '''
     temp_dir = utils.temp_folder()
     pc = utils.PooledCaller()
@@ -442,7 +471,12 @@ def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kw
                     blip_results['warp_file'] = sorted(glob.glob(blip_results['warp_file']))
                 else: # Constant
                     blip_results['warp_file'] = [blip_results['warp_file']] * len(blip_results['blip_file'])
-            if 'template_idx' not in blip_results:
+                    if 'warp_file' not in blip_results:
+                        # warp a rough version as input to volreg
+                        for warp_file, in_file, output in zip(blip_results['warp_file'], in_files, outputs):
+                            pc.run(apply_transforms, warp_file, in_file, in_file, output['blip_file'], interp='quintic')
+                        pc.wait(pool_size=4)
+            if 'template_idx' not in blip_results: # TODO: Deprecated. 'template_idx' is no longer used and to be removed
                 blip_results['template_idx'] = [afni.get_dims(blip_file)[3]//2 for blip_file in blip_results['blip_file']]
             blip_results = [{key: val[k] for key, val in blip_results.items()} for k in range(len(blip_results['blip_file']))]
         files = [(blip_result['blip_file'], blip_result['template_idx']) for blip_result in blip_results]
