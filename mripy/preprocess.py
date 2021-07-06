@@ -194,8 +194,8 @@ def blip_unwarp(forward_file, reverse_file, reverse_loc, out_file, PE_axis='AP',
         -prefix {temp_dir}/{prefix}{ext} -overwrite")
     
     # Copy transform files
-    utils.run(f"3dcopy {temp_dir}/{prefix}_For_WARP{ext} {outputs['for2mid_file']}")
-    utils.run(f"3dcopy {temp_dir}/{prefix}_Rev_WARP{ext} {outputs['rev2mid_file']}")
+    utils.run(f"3dcopy {temp_dir}/{prefix}_For_WARP{ext} {outputs['for2mid_file']} -overwrite")
+    utils.run(f"3dcopy {temp_dir}/{prefix}_Rev_WARP{ext} {outputs['rev2mid_file']} -overwrite")
 
     # Apply warp to get output
     utils.run(f"3dNwarpApply -quintic -nwarp {temp_dir}/{prefix}_For_WARP{ext} \
@@ -450,7 +450,7 @@ def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kw
             'param_file': f"{prefix}.param.1D",
             'xform_file': f"{prefix}.aff12.1D",
         }
-        if best_reverse is not None and blip_results is None:
+        if best_reverse is not None or blip_results is not None: # Not volrge only
             output['warp_file'] = f"{prefix}.warp{ext}"
             output['blip_file'] = f"{prefix}.blip{ext}"
         outputs.append(output)
@@ -462,22 +462,23 @@ def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kw
     if blip_results is not None:
         if isinstance(blip_results, dict):
             # Construct full blip_results from glob pattern
-            if isinstance(blip_results['blip_file'], six.string_types):
+            if 'blip_file' in blip_results and isinstance(blip_results['blip_file'], six.string_types):
                 if utils.contain_wildcard(blip_results['blip_file']): # Wildcard
                     blip_results['blip_file'] = sorted(glob.glob(blip_results['blip_file']))
                 # 'blip_file' should not be a list of constant
-            if isinstance(blip_results['warp_file'], six.string_types):
+            if 'warp_file' in blip_results and isinstance(blip_results['warp_file'], six.string_types):
                 if utils.contain_wildcard(blip_results['warp_file']): # Wildcard
                     blip_results['warp_file'] = sorted(glob.glob(blip_results['warp_file']))
                 else: # Constant
-                    blip_results['warp_file'] = [blip_results['warp_file']] * len(blip_results['blip_file'])
-                    if 'warp_file' not in blip_results:
+                    blip_results['warp_file'] = [blip_results['warp_file']] * len(in_files)
+                    if 'blip_file' not in blip_results:
                         # warp a rough version as input to volreg
                         for warp_file, in_file, output in zip(blip_results['warp_file'], in_files, outputs):
                             pc.run(apply_transforms, warp_file, in_file, in_file, output['blip_file'], interp='quintic')
                         pc.wait(pool_size=4)
+                        blip_results['blip_file'] = [output['blip_file'] for output in outputs]
             if 'template_idx' not in blip_results: # TODO: Deprecated. 'template_idx' is no longer used and to be removed
-                blip_results['template_idx'] = [afni.get_dims(blip_file)[3]//2 for blip_file in blip_results['blip_file']]
+                blip_results['template_idx'] = [afni.get_dims(in_file)[3]//2 for in_file in in_files]
             blip_results = [{key: val[k] for key, val in blip_results.items()} for k in range(len(blip_results['blip_file']))]
         files = [(blip_result['blip_file'], blip_result['template_idx']) for blip_result in blip_results]
     elif best_reverse is not None:
