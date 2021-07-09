@@ -882,7 +882,7 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=N
     return outputs
 
 
-def create_suma_dir(subj_dir, NIFTI=True):
+def create_suma_dir(subj_dir, suma_dir=None, NIFTI=True):
     '''
     Notes about NIFTI
     -----------------
@@ -896,13 +896,27 @@ def create_suma_dir(subj_dir, NIFTI=True):
         This is only provided for backward compatibility.
     '''
     subj = path.split(subj_dir)[1]
-    outputs = {
-        'suma_dir': f"{subj_dir}/SUMA",
-        'viewing_script': f"{subj_dir}/SUMA/run_suma",
-    }
-    # Make SUMA dir
-    utils.run(f"@SUMA_Make_Spec_FS -sid {subj} -fspath {subj_dir} {'-NIFTI' if NIFTI else ''}",
-        error_pattern='', goal_pattern='@SUMA_Make_Spec_FS .+ finished')
+    standard_location = f"{subj_dir}/SUMA"
+    outputs = {}
+    outputs['suma_dir'] = standard_location if suma_dir is None else suma_dir
+    outputs['viewing_script'] = f"{outputs['suma_dir']}/run_suma"
+    # Push existing SUMA dir if output to non-standard location
+    if suma_dir is not None and path.exists(standard_location):
+        temp_location = f"{subj_dir}/{utils.temp_prefix()}SUMA"
+        os.rename(standard_location, temp_location)
+    else:
+        temp_location = None
+    try:
+        # Make SUMA dir
+        utils.run(f"@SUMA_Make_Spec_FS -sid {subj} -fspath {subj_dir} {'-NIFTI' if NIFTI else ''}",
+            error_pattern='', goal_pattern='@SUMA_Make_Spec_FS .+ finished') # TODO: Bug: With goal_pattern set, this function cannot work with PooledCaller
+        # Move SUMA dir to non-standard location
+        if suma_dir is not None:
+            os.rename(standard_location, outputs['suma_dir'])
+    finally:
+        # Pop old SUMA to standard location
+        if temp_location is not None:
+            os.rename(temp_location, standard_location)
     # Create viewing script
     with open(outputs['viewing_script'], 'w') as fo:
         fo.write("afni -niml &\n")

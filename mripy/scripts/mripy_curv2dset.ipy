@@ -45,6 +45,8 @@ if __name__ == '__main__':
         args.roi.append('benson14_varea')
     if args.input == 'benson14':
         args.input = ['benson14_angle', 'benson14_eccen', 'benson14_sigma', 'benson14_varea']
+    else:
+        args.input = [args.input] # TODO: BUG!!!
     surf_dir = path.join(args.subj_dir, 'surf')
     mri_dir = path.join(args.subj_dir, 'mri')
     suma_dir = args.suma_dir if args.suma_dir is not None else path.join(args.subj_dir, 'SUMA')
