@@ -2082,7 +2082,7 @@ def detrend(motion_file, in_file, out_file, censor=True, motion_th=0.3, censor_f
 
 
 def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick_runs=None,
-    motion_files=None, censor=True, motion_th=0.3, censor_files=None, 
+    motion_files=None, censor=True, motion_th=0.3, censor_files=None, mask=None,
     regressor_file=None, poly=None,
     fitts=True, errts=True, REML=True, perblock=False, FDR=None, check_TR=True):
     '''
@@ -2190,6 +2190,8 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
     func_lens = np.array([afni.get_dims(f)[3] for f in in_files])
     if not np.all(func_lens == func_lens[0]):
         print('\x1b[7m*+ WARNING:\x1b[0m Not all runs have equal length:', func_lens)
+    # Mask
+    mask_cmd = '' if mask is None else f"-mask {mask}"
     # Create demeaned motion regressor
     if motion_files is not None:
         motion_files = np.array(motion_files)[pick_runs]
@@ -2301,7 +2303,7 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
     # "-TR_times" specifies the time step for FIR/TENT output
     # "-local_times" means each run uses its own time base
     utils.run(f"3dDeconvolve -force_TR {TR} -TR_times {TR} -local_times \
-        -input {' '.join(in_files)} {censor_cmd} \
+        -input {' '.join(in_files)} {mask_cmd} {censor_cmd} \
         -polort {'A' if poly is None else str(poly)} \
         -num_stimts {total_regressors} {' '.join(motion_cmds)} {' '.join(regressor_cmds)} {' '.join(stim_cmds)} \
         {' '.join(contrast_cmds) if contrasts is not None else ''} \
