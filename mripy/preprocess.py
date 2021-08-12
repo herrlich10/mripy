@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
-import os, glob, shutil, shlex, re, subprocess, multiprocessing, warnings, time
+import sys, os, glob, shutil, shlex, re, subprocess, multiprocessing, warnings, time
 import json, copy
 from os import path
 from collections import OrderedDict
@@ -2322,9 +2322,9 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
     if REML:
         utils.run(f"tcsh {temp_dir}/stats.REML_cmd", error_pattern=r'^\*{2}\w')
 
-    # For .niml.dset, the output path will be ignored by 3dDeconvolve...
+    # For .niml.dset (and only on mac), the output path will be ignored by 3dDeconvolve...
     # TODO: What about IRF case...
-    if default_ext in ['.niml.dset', '.1D.dset']:
+    if default_ext in ['.niml.dset', '.1D.dset'] and sys.platform == 'darwin':
         for dset in ['stats', 'fitts', 'errts']:
             try:     
                 os.rename(f"{dset}{'_REML' if REML else ''}{default_ext}", 
