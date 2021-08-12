@@ -29,7 +29,7 @@ has_afni = bool(re.search('version', subprocess.check_output(['afni', '-ver']).d
 #     afni_path = ''
 
 
-def filter_output(lines, tags=None, pattern=None):
+def filter_output(lines, tags=None, pattern=None, ex_tags=None, ex_pattern=None):
     '''
     Filter output lines according to their initial tags (++, *+, **, etc.) and/or
     a regex search pattern.
@@ -39,13 +39,21 @@ def filter_output(lines, tags=None, pattern=None):
     tags : list of tags
         Default is [], which means all lines will pass the filter.
     pattern : str
+    ex_tags : list of tags to exclude
+    ex_pattern : str
     '''
     if tags is None:
         tags = []
+    if ex_tags is None:
+        ex_tags = []
     if len(tags) > 0:
         lines = [line for line in lines if line[:2] in tags]
+    if len(ex_tags) > 0:
+        lines = [line for line in lines if line[:2] not in ex_tags]
     if pattern is not None:
         lines = [line for line in lines if re.search(pattern, line)]
+    if ex_pattern is not None:
+        lines = [line for line in lines if not re.search(ex_pattern, line)]
     return lines
 
 

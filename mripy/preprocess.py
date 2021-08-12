@@ -2146,30 +2146,36 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
                         fo.write(line)
     temp_dir = utils.temp_folder()
     out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True, trailing_slash=True)
+    if prefix[:3] in ['lh.', 'rh.', 'mh.']:
+        hemi, prefix = prefix[:3], prefix[3:]
+    else:
+        hemi = ''
     outputs = {
         'motion_file': f"{out_dir}{prefix}.motion.1D",
         'X_image': f"{out_dir}X.{prefix}.jpg",
         'X_file': f"{out_dir}X.{prefix}.1D",
         'X_nocensor': f"{out_dir}X.{prefix}.nocensor.1D",
-        'stats_file': f"{out_dir}stats.{prefix}{'_REML' if REML else ''}{ext}",
+        'stats_file': f"{out_dir}{hemi}stats.{prefix}{'_REML' if REML else ''}{ext}",
     }
     if FDR is None:
         FDR = not perblock
     if REML:
-        outputs['stats_var'] = f"{out_dir}stats.{prefix}_REMLvar{ext}"
+        outputs['stats_var'] = f"{out_dir}{hemi}stats.{prefix}_REMLvar{ext}"
     if fitts:
-        outputs['fitts_file'] = f"{out_dir}fitts.{prefix}{'_REML' if REML else ''}{ext}"
+        outputs['fitts_file'] = f"{out_dir}{hemi}fitts.{prefix}{'_REML' if REML else ''}{ext}"
     if errts:
-        outputs['errts_file'] = f"{out_dir}errts.{prefix}{'_REML' if REML else ''}{ext}"
+        outputs['errts_file'] = f"{out_dir}{hemi}errts.{prefix}{'_REML' if REML else ''}{ext}"
     if censor:
         outputs['censor_file'] = f"{out_dir}{prefix}.censor.1D"
         outputs['n_censored'] = None
         censors = []
-    default_ext = '.1D' if ext == '.1D' else '+orig.HEAD'
-    # Check input/output extension compatibility
-    input_ext = path.splitext(in_files[0])[1]
+    default_ext = ext if ext in ['.1D', '.1D.dset', '.niml.dset'] else '+orig.HEAD'
+    # Check input/output extension and hemi compatibility
+    input_prefix, input_ext = afni.split_out_file(in_files[0], split_path=True)[1:3]
     if input_ext != ext:
         raise ValueError(f'Input extension "{input_ext}" is incompatible with output extension "{ext}"')
+    if hemi and hemi != input_prefix[:3]:
+        raise ValueError(f'Input hemi "{input_prefix[:3]}" is incompatible with output hemi "{hemi}"')
     # Pick runs
     if pick_runs is None:
         pick_runs = list(range(len(in_files)))
@@ -2312,9 +2318,25 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
         {f'-fitts {temp_dir}/fitts' if fitts else ''} {f'-errts {temp_dir}/errts' if errts else ''} \
         {'-noFDR' if not FDR else ''} \
         {'-x1D_stop' if REML else ''} -jobs {DEFAULT_JOBS} -overwrite", error_pattern=r'^\*{2}\w')
-        
+
     if REML:
         utils.run(f"tcsh {temp_dir}/stats.REML_cmd", error_pattern=r'^\*{2}\w')
+
+    # For .niml.dset, the output path will be ignored by 3dDeconvolve...
+    # TODO: What about IRF case...
+    if default_ext in ['.niml.dset', '.1D.dset']:
+        for dset in ['stats', 'fitts', 'errts']:
+            try:     
+                os.rename(f"{dset}{'_REML' if REML else ''}{default_ext}", 
+                    f"{temp_dir}/{dset}{'_REML' if REML else ''}{default_ext}")
+            except FileNotFoundError as err:
+                if dset == 'stats': # stats dset should always exist
+                    raise err
+        if REML:
+            os.rename(f"stats_REMLvar{default_ext}", 
+                f"{temp_dir}/stats_REMLvar{default_ext}")
+
+    if REML:
         copy_dset(f"{temp_dir}/stats_REMLvar{default_ext}", outputs['stats_var'])
         for k, IRF_label in enumerate(IRF_labels):
             # Select beta values (not t values)

@@ -18,8 +18,8 @@ def convolve_HRF(starts, lens, TR=2, scan_time=None, HRF=None):
         lens = lens * np.ones(len(starts))
     numout_cmd = '' if scan_time is None else f"-numout {np.ceil(scan_time/TR)}"
     HRF_cmd = '-GAM' if HRF is None else HRF
-    res = utils.run(f"waver -TR {TR} {numout_cmd} {HRF_cmd} -tstim {' '.join([f'{t}%{l}' for t, l in zip(starts, lens)])}", verbose=0)
-    return np.float_(res['output'])
+    res = utils.run(f"waver -TR {TR} {numout_cmd} {HRF_cmd} -tstim {' '.join([f'{t:g}%{l:g}' for t, l in zip(starts, lens)])}", verbose=0)
+    return np.float_(afni.filter_output(res['output'], ex_tags=['++']))
 
 
 def create_ideal(stimuli, lens, **kwargs):
@@ -267,6 +267,14 @@ class RawCache(utils.Savable, object):
 
     n_runs = property(lambda self: len(self.raws))
 
+    def subset(self, mask, cache_file=None):
+        inst = type(self)(None, None)
+        inst.mask = mask if isinstance(mask, io.Mask) else io.Mask(mask)
+        inst.raws = self.get_raws(mask) # TODO: copy???
+        if cache_file is not None:
+            inst.save(cache_file)
+        return inst
+
     def get_raws(self, mask, ids=None):
         return_scalar = False
         if ids is None:
@@ -290,10 +298,10 @@ class RawCache(utils.Savable, object):
             raws.append(raw)
         return raws[0] if return_scalar else raws
 
-    def get_epochs(self, mask, events, event_id, cache_file=None, **kwargs):
-        assert(len(events) == self.n_runs)
+    def get_epochs(self, mask, events, event_id, ids=None, cache_file=None, **kwargs):
+        assert(len(events) == self.n_runs or len(events) == len(ids))
         if cache_file is None or not utils.exists(cache_file):
-            epochs = [Epochs(raw, events[idx], event_id=event_id, **kwargs) for idx, raw in enumerate(self.get_raws(mask))]
+            epochs = [Epochs(raw, events[idx], event_id=event_id, **kwargs) for idx, raw in enumerate(self.get_raws(mask, ids=ids))]
             epochs = concatinate_epochs(epochs)
             if cache_file is not None:
                 epochs.save(cache_file)
@@ -638,14 +646,16 @@ class Epochs(utils.Savable, object):
         return df
 
     def plot(self, hue=None, style=None, row=None, col=None, hue_order=None, style_order=None, row_order=None, col_order=None,
-        palette=None, dashes=None, figsize=None, bbox_to_anchor=None, subplots_kws=None, average_kws=None, **kwargs):
+        palette=None, dashes=None, figsize=None, legend=True, bbox_to_anchor=None, subplots_kws=None, average_kws=None, 
+        axs=None, **kwargs):
         assert(self.info['conditions'] is not None)
         conditions = OrderedDict([(condition, np.unique(levels)) for condition, levels in zip(self.info['conditions'], np.array([ev.split('/') for ev in self.event_id]).T)])
         con_sel = [[hue, style, row, col].index(condition) for condition in conditions]
         n_rows = 1 if row is None else len(conditions[row])
         n_cols = 1 if col is None else len(conditions[col])
-        subplots_kws = dict(dict(sharex=True, sharey=True, figsize=figsize, constrained_layout=True), **({} if subplots_kws is None else subplots_kws))
-        fig, axs = plt.subplots(n_rows, n_cols, squeeze=False, **subplots_kws)
+        if axs is None:
+            subplots_kws = dict(dict(sharex=True, sharey=True, figsize=figsize, constrained_layout=True), **({} if subplots_kws is None else subplots_kws))
+            fig, axs = plt.subplots(n_rows, n_cols, squeeze=False, **subplots_kws)
         row_order = [None] if row is None else (conditions[row] if row_order is None else row_order)
         col_order = [None] if col is None else (conditions[col] if col_order is None else col_order)
         hue_order = [None] if hue is None else (conditions[hue] if hue_order is None else hue_order)
@@ -666,8 +676,9 @@ class Epochs(utils.Savable, object):
                         event = '/'.join(np.array([hue_val, style_val, row_val, col_val])[con_sel])
                         label = '/'.join([s for s in [hue_val, style_val] if s is not None])
                         event_sel = self._partial_match_event(event)
+                        kwargs = dict(dict(show_n='label' if label else 'info', info=show_info), **kwargs)
                         self[event_sel].average(**average_kws).plot(color=palette[hid], ls=dashes[sid], 
-                            label=label, show_n='label' if label else 'info', info=show_info, **kwargs)
+                            label=label, **kwargs)
                         show_info = False
                         plt.axhline(0, color='gray', ls='--')
                 plt.title('/'.join([s for s in [row_val, col_val] if s is not None]))
@@ -675,7 +686,7 @@ class Epochs(utils.Savable, object):
                     plt.xlabel('')
                 if cid > 0:
                     plt.ylabel('')
-                if label:
+                if legend and label:
                     plt.legend(bbox_to_anchor=bbox_to_anchor, loc=None if bbox_to_anchor is None else 'center left')
         sns.despine()
 

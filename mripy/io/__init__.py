@@ -1427,7 +1427,7 @@ class Mask(object):
             if space is None:
                 space = 1
             img.header['sform_code'] = space
-            if prefix.endswith('.nii'):
+            if prefix.endswith('.nii') or prefix.endswith('.nii.gz'):
                 nibabel.save(img, prefix)
             else:
                 nibabel.save(img, temp_file)
