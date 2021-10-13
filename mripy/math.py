@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
 from collections import OrderedDict
+import itertools
 import numpy as np
 from numpy.polynomial import polynomial
 from scipy import stats
@@ -221,7 +222,7 @@ def median_argmax(x, axis=-1):
     return np.reshape(res, y.shape[:-1]).astype(int)
 
 
-def tsarray2df(tsarray, t=None, ts_name='value', t_name='time', trial_name='trial', trial_df=None):
+def tsarray2dataframe(tsarray, t=None, ts_name='value', t_name='time', trial_name='trial', trial_df=None):
     '''
     Parameters
     ----------
@@ -240,6 +241,20 @@ def tsarray2df(tsarray, t=None, ts_name='value', t_name='time', trial_name='tria
     df = pd.DataFrame(OrderedDict([(trial_name, trials), (t_name, t), (ts_name, tsarray)]))
     if trial_df is not None:
         df = pd.concat([df, trial_df.iloc[trials].reset_index(drop=True)], axis=1)
+    return df
+
+
+def array2dataframe(a, factors, var_name='value'):
+    '''
+    a : array
+    factors : dict (factor->levels)
+    '''
+    assert(a.ndim == len(factors))
+    for d, levels in enumerate(factors.values()):
+        assert(a.shape[d] == len(levels))
+    data = np.array(list(itertools.product(*list(factors.values()))))
+    df = pd.DataFrame(data, columns=factors.keys())
+    df[var_name] = a.ravel()
     return df
 
 

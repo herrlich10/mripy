@@ -368,15 +368,35 @@ def read_events(event_files):
     return events_list, event_id
 
 
-def events_from_dataframe(df, run, time, conditions, duration=None, event_id=None):
+def events_from_dataframe(df, time, conditions, duration=None, run=None, event_id=None):
+    '''
+    Parameters
+    ----------
+    df : dataframe
+    time : str
+    conditions : list (names) or OrderedDict (name->levels)
+    duration : str
+    run : str
+    event_id : dict (name->index)
+
+    Returns
+    -------
+    events : array
+    event_id : dict (name->index)
+    '''
+    if not isinstance(conditions, dict):
+        conditions = OrderedDict([(condition, sorted(df[condition].unique())) for condition in conditions])
     if event_id is None:
-        levels = itertools.product(*[df[condition].unique() for condition in conditions])
+        levels = itertools.product(*list(conditions.values()))
         event_id = OrderedDict([('/'.join(level), k+1) for k, level in enumerate(levels)])
-    events = []
     get_event_id = lambda trial: event_id['/'.join([getattr(trial, condition) for condition in conditions])]
     get_duration = lambda trial: 0 if duration is None else getattr(trial, duration)
-    for run in df[run].unique():
-        events.append(np.array([[trial.time, get_duration(trial), get_event_id(trial)] for trial in df[df.run==run].itertuples()]))
+    if run is not None:
+        events = []
+        for r in sorted(df[run].unique()): # Uniques are returned in order of appearance (NOT sorted).
+            events.append(np.array([[getattr(trial, time), get_duration(trial), get_event_id(trial)] for trial in df[df[run]==r].itertuples()]))
+    else:
+        events = np.array([[getattr(trial, time), get_duration(trial), get_event_id(trial)] for trial in df.itertuples()])
     return events, event_id
 
 
