@@ -1,0 +1,9 @@
+nibabel
+deepdish
+numpy
+scipy
+scikit-learn
+pandas
+tables
+matplotlib
+seaborn
