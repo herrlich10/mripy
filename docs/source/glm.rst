@@ -6,6 +6,7 @@ We can use :meth:`mripy.preprocess.glm` to analyze our fMRI data using a General
 .. code-block:: python
 
     import numpy as np
+    import matplotlib.pyplot as plt
     from mripy import io, preprocess as prep
 
     data_dir = 'path/to/my/experiment/data'
@@ -13,6 +14,7 @@ We can use :meth:`mripy.preprocess.glm` to analyze our fMRI data using a General
     res_dir = f"{data_dir}/{subject}/results"
     stim_dir = f"{data_dir}/{subject}/stimuli"
     runs = [f"{k:02d}" for k in [1, 2, 3, 4]] # ['01', '02', '03', '04']
+    TR = 2 # s
 
 
 Block design
