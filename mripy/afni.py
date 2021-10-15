@@ -11,7 +11,9 @@ from . import six
 
 
 # Test afni installation
-has_afni = bool(re.search('version', subprocess.check_output(['afni', '-ver']).decode('utf-8'), re.IGNORECASE))
+# has_afni = bool(re.search('version', subprocess.check_output(['afni', '-ver']).decode('utf-8'), re.IGNORECASE))
+has_afni = True
+
 # # Find afni path
 # config_dir = path.expanduser('~/.mripy')
 # if not path.exists(config_dir):
