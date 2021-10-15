@@ -1,5 +1,6 @@
 nibabel
 deepdish
+lxml
 numpy
 scipy
 scikit-learn
