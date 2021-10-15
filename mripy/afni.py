@@ -68,7 +68,7 @@ def check_output(cmd, tags=None, pattern=None, verbose=0, **kwargs):
     cmd : str
         A single command string packed with all options (but no wildcard)
     **kwargs :
-        Go to subprocess.check_output(**kwargs)
+        Go to `subprocess.check_output(**kwargs)`
 
     Returns
     -------
@@ -274,12 +274,12 @@ def get_ORIENT(fname, format='str'):
     References
     ----------
     [1] https://afni.nimh.nih.gov/pub/dist/doc/program_help/README.attributes.html
-        #define ORI_R2L_TYPE  0  /* Right to Left         */
-        #define ORI_L2R_TYPE  1  /* Left to Right         */
-        #define ORI_P2A_TYPE  2  /* Posterior to Anterior */
-        #define ORI_A2P_TYPE  3  /* Anterior to Posterior */
-        #define ORI_I2S_TYPE  4  /* Inferior to Superior  */
-        #define ORI_S2I_TYPE  5  /* Superior to Inferior  */
+        #define ORI_R2L_TYPE  0  // Right to Left
+        #define ORI_L2R_TYPE  1  // Left to Right
+        #define ORI_P2A_TYPE  2  // Posterior to Anterior
+        #define ORI_A2P_TYPE  3  // Anterior to Posterior
+        #define ORI_I2S_TYPE  4  // Inferior to Superior
+        #define ORI_S2I_TYPE  5  // Superior to Inferior
 
         Thus "0 3 4" is standard DICOM Reference Coordinates System, i.e., RAI.
         The AFNI convention is also that R-L, A-P, and I-S are negative-to-positive, i.e., RAI.
@@ -572,7 +572,7 @@ def write_colorscale_file(fname, pal_name, colors, locations=None, interp=None):
     '''
     Parameters
     ----------
-    fname : *.pal file name
+    fname : `*.pal` file name
     pal_name : palette name (or title)
     colors : a list of RGB colors within [0,1]
         first color (bottom) -> last color (top)
@@ -602,12 +602,15 @@ def parse_patch(patch):
     1. Each replacement is started with one or more comment lines. The last
        comment line is treated as replacement target, which may contain an
        optional replacement directive at the end:
-        # This is an example <replace command="1"/>
+       # This is an example <replace command="1"/>
+       
        Possible directives for replacing the original scripts includes:
-        1) command="n": replace n commands
-        2) line="n": replace n lines
-        3) until="regexp": replace until a specific line (the regexp is the
-           last line to be replaced)
+
+       1) command="n": replace n commands
+       2) line="n": replace n lines
+       3) until="regexp": replace until a specific line (the regexp is the
+          last line to be replaced)
+
     2. Each replacement must end with two consecutive newlines.
     '''
     with open(patch, 'r') as fin:

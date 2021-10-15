@@ -242,9 +242,11 @@ class PooledCaller(object):
         shell : bool
             If provided, must be a keyword argument.
             If shell is True, the command will be executed through the shell.
-        *args, **kwargs : 
-            If cmd is a callable, *args and **kwargs are passed to the callable as its arguments.
-            If cmd is a list or str, **kwargs are passed to subprocess.Popen().
+        *args : 
+            If cmd is a callable, `*args` are passed to the callable as its arguments.
+        **kwargs : 
+            If cmd is a callable, `**kwargs` are passed to the callable as its keyword arguments.
+            If cmd is a list or str, `**kwargs` are passed to subprocess.Popen().
         _depends : list
             A list of jobs (identified by their uuid) that have to be done 
             before this job can be scheduled.

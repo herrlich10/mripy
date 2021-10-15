@@ -47,8 +47,8 @@ def parse_attr(attr):
     '''
     Split a single attribute into key and value.
 
-    Specification
-    -------------
+    Notes
+    -----
     NIML attributes are in the general form "attname=string", separated by whitespace.
     XML allows whitespace to occur around the "=" that separates the attname from the string. 
     NIML does not allow this whitespace; the next character after attname must be "=", 
@@ -179,8 +179,8 @@ def parse_niml(fname):
     '''
     Parse NIML file into Python xml.etree.Element using incremental event-driven parsing.
 
-    Specification
-    -------------
+    References
+    ----------
     https://afni.nimh.nih.gov/pub/dist/src/niml/NIML_base.html
     '''
     batch_size = 1024

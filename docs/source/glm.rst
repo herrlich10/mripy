@@ -23,7 +23,8 @@ Fixed duration blocks
 
 This is the most basic design, especially for functional localizers.
 
-In the following example, each block lasts 16 s.
+In the following example, we have Face and House blocks, and 
+each block lasts 16 s. The model can be specified as ``BLOCK(16)``.
 
 .. code-block:: python
 
@@ -136,26 +137,28 @@ In the following example, we have two events: A and B. We first average all voxe
 in our ROI into a single time series, and then perform deconvolution to estimate 
 the brain respones to event A and event B.
 
-We assume the response starts at 0 sec after the event onset, lasting 24 sec, and 
-we want to sample the response every 2 sec (which does not need to be equal to the TR).
-This results in 13 samples over the 24 sec period. We can express the model as ``CSPLIN(0,24,13)``.
-If we further assume the response starts from 0 at 0 sec, and has already been back to 0
-at 24 sec after the event onset, the resulting model can be written as ``CSPLINzero(0,24,11)``, 
-since we are only left with 11 free parameters to estimate.
+We assume the response starts at 0 s after the event onset, lasting 24 s, and 
+we want to sample the response every 2 s (which does not need to be equal to the TR).
+This results in 13 samples over the 24 s period. We can express the model as ``CSPLIN(0,24,13)``.
+If we further assume the response starts from 0 at 0 s, and has already been settled to 0
+at 24 s after the event onset, the resulting model can be written as ``CSPLINzero(0,24,13)``, 
+although we now only have 11 free parameters to estimate.
 
 .. code-block:: python
 
     # Average all voxels in the ROI into a single time series 
     mask = io.Mask(f"{res_dir}/V1.nii")
     for run in runs:
-        x = mask.dump(f"{res_dir}/epi{run}.scale.nii") # Dump data within the ROI -> [n_voxels, n_times]
-        x = x.mean(axis=0) # Average across voxels
-        np.savetxt(f"{res_dir}/epi{run}.1D", x, fmt='%.6f') # Save as *.1D file (plain text)
+        data = mask.dump(f"{res_dir}/epi{run}.scale.nii") # Dump data within the ROI -> [n_voxels, n_times]
+        data = data.mean(axis=0, keepdims=True) # Average across voxels
+        # Note that the data must be 2D: [n_time_series, n_times], while n_time_series can be 1
+        # This allow you to save data from multiple ROIs or multiple conditions in a single *.1D file
+        np.savetxt(f"{res_dir}/epi{run}.1D", data, fmt='%.6f') # Save as *.1D file (plain text)
 
     # Perform GLM using "CSPLINzero" model
     design = OrderedDict()
-    design['A'] = f"{stim_dir}/EventA_onset_time.txt 'CSPLINzero(0,24,11)'"
-    design['B'] = f"{stim_dir}/EventB_onset_time.txt 'CSPLINzero(0,24,11)'"
+    design['A'] = f"{stim_dir}/EventA_onset_time.txt 'CSPLINzero(0,24,13)'"
+    design['B'] = f"{stim_dir}/EventB_onset_time.txt 'CSPLINzero(0,24,13)'"
     prep.glm(in_files=[f"{res_dir}/epi{run}.1D" for run in runs], 
         out_file=f"{res_dir}/V1_resp.1D", design=design, TR=TR, 
         motion_files=[f"{res_dir}/epi{run}.volreg.param.1D" for run in runs])
@@ -164,9 +167,10 @@ since we are only left with 11 free parameters to estimate.
     # - stats.V1_resp_REML.1D   # This is the usual stats file with F, beta, t values for each regressor
     # - irp.A.V1_resp_REML.1D   # The impulse response of event A \
     # - irp.B.V1_resp_REML.1D   # The impulse response of event B - These two are our estimated impulse responses
-    irf = np.zeros([2,11]) # Impulse response function: [n_events, n_times]
+    irf = np.zeros([2,13]) # Impulse response function: [n_events, n_times]
     for k, event in enumerate(['A', 'B']):
-        irf[k,:] = io.read_txt(f"{res_dir}/irp.{event}.V1_resp_REML.1D")
+        # Remember that the first (0th) and the last (12th) element are zero by construction
+        irf[k,1:-1] = io.read_txt(f"{res_dir}/irp.{event}.V1_resp_REML.1D")
     
     # Plot the estimated evoked fMRI responses for event A and B
     t = np.linspace(0, 24, 13) # Time after event onset in seconds

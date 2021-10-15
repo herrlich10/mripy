@@ -96,8 +96,9 @@ def _parse_physio_raw(fname):
 
 def parse_physio_file(fname, date=None):
     '''
-    Implementation notes
-    --------------------
+    Notes
+    -----
+    IMPLEMENTATION
     1. The first 4 (ext, puls, resp) or 5 (ecg) values are parameters (of
        unknown meanings).
     2. There can be multiple data lines, within which extra parameters is
@@ -114,8 +115,7 @@ def parse_physio_file(fname, date=None):
     6. The sampling rate is slightly (and consistently) slower than specified
        in the manual and in [1].
 
-    Notes about timing
-    ------------------
+    ABOUT TIMING
     The scanner clock is slightly faster than the wall clock so that 2 sec in
     real time is recorded as ~2.008 sec in the scanner, affacting both dicom
     header and physiological footer, even though the actual TR is precisely 2 s

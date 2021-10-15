@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
 import sys, os, glob, shutil, shlex, re, subprocess, multiprocessing, warnings, time
-import json, copy
+import json
 from os import path
 from collections import OrderedDict
 import numpy as np
@@ -19,7 +19,6 @@ try:
     import seaborn as sns
 except ImportError:
     warnings.warn('Cannot import seaborn, which is required for some functions.', ImportWarning)
-import nibabel
 from . import six, afni, io, utils, dicom, dicom_report, math
 
 
@@ -884,8 +883,9 @@ def fs_recon(T1s, out_dir, T2=None, FLAIR=None, NIFTI=True, hires=True, fs_ver=N
 
 def create_suma_dir(subj_dir, suma_dir=None, NIFTI=True):
     '''
-    Notes about NIFTI
-    -----------------
+    Notes
+    -----
+    ABOUT NIFTI
     If NIFTI=True, @SUMA_Make_Spec_FS will use mri_convert to convert 
         $surf_dir/orig.mgz (which is averaged and hires) to SurfVol.nii.
         Volumes will be in .nii and surfaces will be in .gii format.
@@ -2409,9 +2409,6 @@ def align_center(base_file, in_file, out_file):
 
     all_finished(outputs)
     return outputs
-
-
-
 
 
 
