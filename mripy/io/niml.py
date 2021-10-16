@@ -70,9 +70,10 @@ def parse_ni_type(ni_type, flatten=None):
 
     The method exploits the flexibilty of np.dtype() in a recursive manner.
     Assumptions which seem to be contradicting the NIML specification:
-      1. The standard type is not abbreviated, e.g., int
-      2. The multiple type is indicated by "*", e.g., 4*int
-      3. The compound type is separated by ",", e.g., 4*float,int,String
+    
+    1. The standard type is not abbreviated, e.g., int
+    2. The multiple type is indicated by "*", e.g., 4*int
+    3. The compound type is separated by ",", e.g., 4*float,int,String
 
     Parameters
     ----------

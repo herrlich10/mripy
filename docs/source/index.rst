@@ -14,6 +14,7 @@ Welcome to mripy's documentation!
    install
    mripy
    glm
+   modules
 
 
 Indices and tables

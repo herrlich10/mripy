@@ -12,8 +12,8 @@
 #
 import os
 import sys
-sys.path.insert(0, os.path.abspath('../../'))
 # sys.path.insert(0, os.path.abspath('../../mripy/'))
+sys.path.insert(0, os.path.abspath('../..')) # This is important for ReadTheDocs to actually find mripy
 
 
 # -- Project information -----------------------------------------------------
@@ -33,6 +33,7 @@ release = '0.6.21'
 # ones.
 extensions = [
     'sphinx.ext.napoleon',
+    'myst_parser',
 ]
 
 # Add any paths that contain templates here, relative to this directory.

@@ -218,12 +218,12 @@ def read_fs_annotation(fname, return_df=False):
 
 def write_fs_color_table(fname, color_table):
     '''
-    Write FreeSurfer color table file (*.ctab), similar to {subject}/label/aparc.annot.a2009s.ctab, 
+    Write FreeSurfer color table file (`*.ctab`), similar to {subject}/label/aparc.annot.a2009s.ctab, 
     or https://surfer.nmr.mgh.harvard.edu/fswiki/FsTutorial/AnatomicalROI/FreeSurferColorLUT
 
     This file will be useful to generate a valid annot.niml.dset containing correct color table, 
-    which can then be used in *.spec to display custom anatomical labels at SUMA crosshair location. E.g., 
-    FSread_annot -input lh.HCP-MMP1.annot \
+    which can then be used in `*.spec` to display custom anatomical labels at SUMA crosshair location. E.g., 
+    >>> FSread_annot -input lh.HCP-MMP1.annot \
         -FSversion 2009 -FScmap lh.HCP-MMP1.ctab -FScmaprange 0 180 \
         -dset lh.HCP-MMP1.annot.niml.dset -overwrite
     '''

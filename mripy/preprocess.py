@@ -886,14 +886,16 @@ def create_suma_dir(subj_dir, suma_dir=None, NIFTI=True):
     Notes
     -----
     ABOUT NIFTI
+
     If NIFTI=True, @SUMA_Make_Spec_FS will use mri_convert to convert 
-        $surf_dir/orig.mgz (which is averaged and hires) to SurfVol.nii.
-        Volumes will be in .nii and surfaces will be in .gii format.
-        This is the preferable way to go.
+    $surf_dir/orig.mgz (which is averaged and hires) to SurfVol.nii.
+    Volumes will be in .nii and surfaces will be in .gii format.
+    This is the preferable way to go.
+
     If NIFTI=False, @SUMA_Make_Spec_FS will use to3d to convert COR- files
-        to SurfVol+orig.HEAD which is 1x1x1.
-        Volumes will be in +orig.HEAD and surfaces will be in .asc format.
-        This is only provided for backward compatibility.
+    to SurfVol+orig.HEAD which is 1x1x1.
+    Volumes will be in +orig.HEAD and surfaces will be in .asc format.
+    This is only provided for backward compatibility.
     '''
     subj = path.split(subj_dir)[1]
     standard_location = f"{subj_dir}/SUMA"
@@ -1154,11 +1156,12 @@ def create_vessel_mask_BOLD(beta, out_file, th=10):
 def unifize_epi(in_file, out_file, method='N4', ribbon=None):
     '''
     Remove spatial trend/inhomogeneity in (mean) EPI data
-        to better identify vessels using find_epi_dark_voxel_threshold().
+    to better identify vessels using find_epi_dark_voxel_threshold().
         
     The default 'N4' method requires you have ANTs installed.
+
     Only 'Kay2019' method need an additional cortical ribbon mask
-        that is aligned with the EPI volume.
+    that is aligned with the EPI volume.
 
     Parameters
     ----------
@@ -1583,13 +1586,13 @@ def apply_ants(transforms, base_file, in_file, out_file, interp=None, dim=None, 
     Parameters
     ----------
     transforms : list of file names
-        Online matrix inversion is supported as "*_0GenericAffine.mat -I".
+        Online matrix inversion is supported as `*_0GenericAffine.mat -I`.
     base_file : str
         If None, apply transforms to point list using `antsApplyTransformsToPoints`,
-        and `in_file` is expected to be a *.csv file.
+        and `in_file` is expected to be a `*.csv` file.
         Otherwise, apply transforms to image using `antsApplyTransforms`.
     interp : str
-        LanczosWindowedSinc, NearestNeighbor, Linear, BSpline[<order=3>], etc.
+        'LanczosWindowedSinc', 'NearestNeighbor', 'Linear', 'BSpline[<order=3>]', etc.
     
     Note that for volumes, last transform applies first (pulling from base grid), 
     as in AFNI, as well as in ANTs command line.
@@ -1769,7 +1772,7 @@ class ANTsTransform(Transform):
         
         Parameters
         ----------
-        in_file, out_file : *.csv file with "x,y,z,t" header line.
+        in_file, out_file : `*.csv` file with "x,y,z,t" header line.
         '''
         return self.apply_inverse(in_file, out_file, base_file=None)
 
@@ -1779,7 +1782,7 @@ class ANTsTransform(Transform):
 
         Parameters
         ----------
-        in_file, out_file : *.csv file with "x,y,z,t" header line.
+        in_file, out_file : `*.csv` file with "x,y,z,t" header line.
         '''
         return self.apply(in_file, out_file, base_file=None)
 

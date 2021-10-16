@@ -305,8 +305,8 @@ def parallel_1D(cmd, in_file, prefix, n_jobs=1, combine_output=True, **kwargs):
             {prefix} and {in_file}, which will be substituded with ''.format().
             As expected, other {} must be escaped as {{}}.
             For example,
-                parallel_1D("3dTcat -prefix {prefix} -overwrite \
-                    {in_file}'{{0:9}}'", 'xyz_list.1D', 'test', n_jobs=4)
+            >>> parallel_1D("3dTcat -prefix {prefix} -overwrite \
+                {in_file}'{{0:9}}'", 'xyz_list.1D', 'test', n_jobs=4)
     '''
     # Count the number of lines
     with open(in_file) as fi:

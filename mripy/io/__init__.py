@@ -99,6 +99,7 @@ def parse_physio_file(fname, date=None):
     Notes
     -----
     IMPLEMENTATION
+
     1. The first 4 (ext, puls, resp) or 5 (ecg) values are parameters (of
        unknown meanings).
     2. There can be multiple data lines, within which extra parameters is
@@ -116,6 +117,7 @@ def parse_physio_file(fname, date=None):
        in the manual and in [1].
 
     ABOUT TIMING
+
     The scanner clock is slightly faster than the wall clock so that 2 sec in
     real time is recorded as ~2.008 sec in the scanner, affacting both dicom
     header and physiological footer, even though the actual TR is precisely 2 s
@@ -433,7 +435,7 @@ def sort_dicom_series(folder, series_pattern=SERIES_PATTERN):
     Parameters
     ----------
     folder : string
-        Path to the folder containing all the *.IMA files.
+        Path to the folder containing all the `*.IMA` files.
 
     Returns
     -------
@@ -617,13 +619,14 @@ def convert_dicoms(dicom_dirs, out_dir=None, prefix=None, out_type='.nii', dicom
     Parameters
     ----------
     dicom_dirs : list or str
-        1. A list of folders containing *.IMA files
+        1. A list of folders containing `*.IMA` files
         2. It can also be a glob pattern that describes a list of folders, e.g., "raw_fmri/func??"
-        3. Finally, it can be a root folder (e.g., "raw_fmri") containing multiple sub-folders of *.IMA files, 
+        3. Finally, it can be a root folder (e.g., "raw_fmri") containing multiple sub-folders of `*.IMA` files, 
            raw_fmri/anat, raw_fmri/func01, raw_fmri/func02, etc.
     out_dir : str
         Output directory for converted datasets, default is current directory.
-        The output would look like:
+        The output would look like::
+        
             out_dir/anat.nii, out_dir/func01.nii, out_dir/func02.nii, etc.
     '''
     original_dicom_dirs = dicom_dirs
@@ -815,9 +818,11 @@ def get_dim_order(in_file):
 
 def change_dim_order(in_file, out_file=None, dim_order=None, method='afni'):
     '''
+    Parameters
+    ----------
     dim_order : 1D array with 8 numbers
-        e.g., np.array([  5, 300, 300, 124,   1,   2,   1,   1], dtype=np.int16) # for stats 
-        or, np.array([  4, 150, 150,  62, 158,   1,   1,   1], dtype=np.int16) # for epi
+        >>> np.array([  5, 300, 300, 124,   1,   2,   1,   1], dtype=np.int16) # for stats 
+        >>> np.array([  4, 150, 150,  62, 158,   1,   1,   1], dtype=np.int16) # for epi
     method : str, 'afni' | 'nibabel'
     '''
     if dim_order is None:
@@ -880,7 +885,7 @@ def write_afni(prefix, vol, base_img=None):
 
 # ========== AFNI ASC ==========
 def read_asc(fname, dtype=None):
-    '''Read FreeSurfer/SUMA surface (vertices and faces) in *.asc format.'''
+    '''Read FreeSurfer/SUMA surface (vertices and faces) in `*.asc` format.'''
     if dtype is None:
         dtype = float
     with open(fname, 'r') as fin:
@@ -897,7 +902,7 @@ def read_asc(fname, dtype=None):
 
 def read_patch_asc(fname, dtype=None, index_type='multimap'):
     '''
-    Read FreeSurfer/SUMA patch (noncontiguous vertices and faces) in *.asc format.
+    Read FreeSurfer/SUMA patch (noncontiguous vertices and faces) in `*.asc` format.
     
     index_type : str
         - "raw" or "array"
@@ -1090,6 +1095,7 @@ def write_niml_bin_nodes(fname, idx, val):
     References
     ----------
     [1] https://afni.nimh.nih.gov/afni/community/board/read.php?1,60396,60399#msg-60399
+
     [2] After some trial-and-error, the following components are required:
         self_idcode, COLMS_RANGE, COLMS_TYPE (tell suma how to interpret val), 
         no whitespace between opening tag and binary data.

@@ -35,11 +35,12 @@ def draw_color_circle(cmap, res=512):
 def plot_volreg(dfiles, convention=None):
     '''
     The six columns from left to right are:
+    
     - For 3dvolreg: roll(z), pitch(x), yaw(y), dS(z), dL(x), dP(y)
-        Note that the interpretation for roll and yaw in afni is opposite from SPM (and common sense...)
-        This program will follow the SPM convention.
+      Note that the interpretation for roll and yaw in afni is opposite from SPM (and common sense...)
+      This program will follow the SPM convention.
     - For 3dAllineate shift_rotate: x-shift  y-shift  z-shift$ z-angle  x-angle$ y-angle$
-        Note that the dollar signs in the end indicate parameters that are fixed.
+      Note that the dollar signs in the end indicate parameters that are fixed.
     '''
     files = glob.glob(dfiles) if isinstance(dfiles, six.string_types) else dfiles
     labels = [r'$\Delta$R-L(x) [mm]', r'$\Delta$A-P(y) [mm]', r'$\Delta$I-S(z) [mm]',

@@ -191,10 +191,11 @@ def immediate_neighbors(verts, faces, mask=None, return_array=False):
     '''
     For each node, return its immediate neighboring nodes within the mask.
     By default, neighbors are represented as a list of sets:
-        [set([n00, n01, ...]), set([n10, n11, ...]), ...]
+    ``[set([n00, n01, ...]), set([n10, n11, ...]), ...]``
+
     If return_array=True, a numpy array with a special schema is returned
     to facilitate inter-process memory sharing in multiprocessing:
-        [[n_nb0+1, n00, n01, ..., 0, 0], [n_nb1+1, n10, n11, ..., 0, 0], ...] 
+    ``[[n_nb0+1, n00, n01, ..., 0, 0], [n_nb1+1, n10, n11, ..., 0, 0], ...]``
     '''
     # neighbors = [np.unique(np.r_[faces[faces[:,0]==idx,1:].ravel(), 
     #     faces[faces[:,1]==idx,::2].ravel(), 
@@ -447,7 +448,7 @@ def transform_mesh(transform, in_file, out_file):
     Parameters
     ----------
     transform : mripy.preprocess.Transform object
-    in_file, out_file : surface mesh file name (*.gii or *.asc)
+    in_file, out_file : surface mesh file name (`*.gii` or `*.asc`)
     '''
     verts, faces = io.read_surf_mesh(in_file)
     verts = transform.apply_to_xyz(verts, convention='NIFTI')

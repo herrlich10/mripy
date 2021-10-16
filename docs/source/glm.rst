@@ -72,7 +72,7 @@ In this case, we can use the "dmUBLOCK" model in AFNI. "dm" stands for "duration
     for event in ['L', 'R']: # Left eye dominant vs Right eye dominant
         with open(f"{stim_dir}/{event}_rivalry.txt", 'w') as fout:
             # `tt` and `dd` contain the onset and duration for all events in a run
-            # `ttt` and `ddd` are the onset and duration for each event (i.e., button press）
+            # `ttt` and `ddd` are the onset and duration for each event (i.e., button press)
             for tt, dd in zip(t[event], d[event]): 
                 fout.write(' '.join([f"{ttt:8.3f}:{ddd:<8.3f}" for ttt, ddd in zip(tt, dd)]) + '\n')
 
