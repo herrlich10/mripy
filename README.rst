@@ -5,6 +5,12 @@ This is a collection of handy small tools for analyzing neuroimaging data (esp.
 high resolution fMRI), which can be used both as a Python package and 
 a set of command line tools. It is a useful augmentation to the ``AFNI`` tool chain.
 
+
+Documentation
+=============
+The latest `mripy documentation <https://mripy.readthedocs.io/en/latest/>`_ is available online.
+
+
 Installation (in linux/mac)
 ===========================
 
