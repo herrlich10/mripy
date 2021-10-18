@@ -15,6 +15,8 @@ import sys
 # sys.path.insert(0, os.path.abspath('../../mripy/'))
 sys.path.insert(0, os.path.abspath('../..')) # This is important for ReadTheDocs to actually find mripy
 
+import inspect # For getting start_line and end_line
+
 
 # -- Project information -----------------------------------------------------
 
@@ -33,7 +35,11 @@ release = '0.6.21'
 # ones.
 extensions = [
     'sphinx.ext.napoleon',
+    'sphinx.ext.linkcode',
     'myst_parser',
+    'nbsphinx',
+    'sphinx_copybutton',
+    'sphinx-prompt',
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -57,3 +63,40 @@ html_theme = 'sphinx_rtd_theme'
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
+
+
+# -- Link code configuration --
+
+def linkcode_resolve(domain, info):
+    if domain != 'py':
+        return None
+    if not info['module']:
+        return None
+    filename = info['module'].replace('.', '/')
+    # return "https://somesite/sourcerepo/%s.py" % filename
+    url = f"https://github.com/herrlich10/mripy/blob/master/{filename}.py"
+
+    # -- Get start_line and end_line
+    # Ref: https://github.com/scikit-image/scikit-image/blob/main/doc/source/conf.py
+    modname = info['module'] # package.module
+    fullname = info['fullname'] # class.method
+    # Find final code object
+    obj = sys.modules.get(modname)
+    if obj is None:
+        return url
+    for part in fullname.split('.'):
+        try:
+            obj = getattr(obj, part)
+        except:
+            return url
+    # Strip decorators which would resolve to the source of the decorator
+    obj = inspect.unwrap(obj)
+    # Get start_line from source code
+    try:
+        source, start_line = inspect.getsourcelines(obj)
+    except:
+        linespec = ''
+    else:
+        stop_line = start_line + len(source) - 1
+        linespec = f"#L{start_line}-L{stop_line}"
+    return url + linespec

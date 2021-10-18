@@ -1,0 +1,15 @@
+nibabel
+deepdish
+lxml
+numpy
+scipy
+scikit-learn
+pandas
+tables
+matplotlib
+seaborn
+
+myst-parser
+nbsphinx
+sphinx-copybutton
+sphinx-prompt
