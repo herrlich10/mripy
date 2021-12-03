@@ -1314,13 +1314,14 @@ class Mask(object):
         assert(self.compatible(other))
         mask = copy.deepcopy(self)
         mask.index = np.union1d(self.index, other.index)
-        value_dict = {idx: val for idx, val in zip(self.index, self.value)}
-        for idx, val in zip(other.index, other.value):
-            if idx in value_dict:
-                value_dict[idx] += val
-            else:
-                value_dict[idx] = val
-        mask.value = np.array([value_dict[idx] for idx in mask.index])
+        if self.value is not None and other.value is not None:
+            value_dict = {idx: val for idx, val in zip(self.index, self.value)}
+            for idx, val in zip(other.index, other.value):
+                if idx in value_dict:
+                    value_dict[idx] += val
+                else:
+                    value_dict[idx] = val
+            mask.value = np.array([value_dict[idx] for idx in mask.index])
         return mask
 
     def __mul__(self, other):

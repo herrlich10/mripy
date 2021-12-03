@@ -6,8 +6,45 @@ from collections import OrderedDict
 import numpy as np
 from scipy import stats
 import pandas as pd
-from sklearn import model_selection, metrics
+from sklearn import model_selection, metrics, base
 from . import six, utils
+
+
+class Demeaner(base.TransformerMixin, base.BaseEstimator):
+    '''Remove the mean of each sample individually.
+
+    For fMRI, this removes mean activation within ROI for each sample.
+    '''
+    def fit(self, X, y=None):
+        '''Do nothing and return the estimator unchanged.
+        This method is just there to implement the usual API and hence
+        work in pipelines.
+        Parameters
+        ----------
+        X : {array-like, sparse matrix} of shape (n_samples, n_features)
+            The data to estimate the demean parameters.
+        y : Ignored
+            Not used, present here for API consistency by convention.
+        Returns
+        -------
+        self : object
+            Fitted transformer.
+        '''
+        # self._validate_data(X, accept_sparse='csr')
+        return self
+
+    def transform(self, X):
+        '''Subtract the mean of each row in X.
+        Parameters
+        ----------
+        X : {array-like, sparse matrix} of shape (n_samples, n_features)
+            The data to demean, row by row.
+        Returns
+        -------
+        X_tr : {ndarray, sparse matrix} of shape (n_samples, n_features)
+            Transformed array.
+        '''
+        return X - X.mean(axis=1, keepdims=True)
 
 
 def standardize_within_group(X, groups, with_mean=True, with_std=True):

@@ -669,7 +669,7 @@ class Epochs(utils.Savable, object):
         palette=None, dashes=None, figsize=None, legend=True, bbox_to_anchor=None, subplots_kws=None, average_kws=None, 
         axs=None, **kwargs):
         assert(self.info['conditions'] is not None)
-        conditions = OrderedDict([(condition, np.unique(levels)) for condition, levels in zip(self.info['conditions'], np.array([ev.split('/') for ev in self.event_id]).T)])
+        conditions = OrderedDict([(condition, np.unique(levels)) for condition, levels in zip(self.info['conditions'], np.array([ev.split('/') for ev in self.event_id]).T) if condition in [hue, style, row, col]])
         con_sel = [[hue, style, row, col].index(condition) for condition in conditions]
         n_rows = 1 if row is None else len(conditions[row])
         n_cols = 1 if col is None else len(conditions[col])
