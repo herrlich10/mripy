@@ -75,6 +75,49 @@ def create_ERP(t, x, events, tmin=-8, tmax=16, dt=0.1, baseline=[-2,0], interp='
     return ERP, times
 
 
+def first_peak(t, x, after=2, trough='before', sg_win=41, sg_order=3, visualize=False, ax=None):
+    '''Difference between first peak after `after` and first trough before it.
+    '''
+    y = signal.savgol_filter(x, sg_win, sg_order)
+    if visualize:
+        plt.sca(ax)
+        plt.plot(t, x, 'C0')
+        plt.plot(t, y, 'C1')
+        plt.axvline(0, color='gray', ls='--')
+    after_idx = np.argmin(np.abs(t-after))
+    prominence = np.std(x)/10
+    p = signal.find_peaks(y, prominence=prominence)[0]
+    try:
+        p = p[p>after_idx][0]
+    except IndexError:
+        p = len(x) - 1
+    n = signal.find_peaks(-y, prominence=prominence)[0]
+    if trough == 'before':
+        try:
+            n = n[n<p][-1]
+        except IndexError:
+            n = 0
+    elif trough == 'after':
+        try:
+            n = n[n>p][0]
+        except IndexError:
+            n = len(x) - 1
+    if visualize:
+        if trough == 0:
+            plt.plot(t[p], x[p], 'oC3')
+            plt.plot([t[p],t[p]], [0,x[p]], 'C3')
+            plt.plot([0,t[p]], [0,0], 'C2')
+        else:
+            plt.plot(t[p], x[p], 'oC3')
+            plt.plot(t[n], x[n], 'oC2')
+            plt.plot([t[p],t[p]], [x[n],x[p]], 'C3')
+            plt.plot([t[n],t[p]], [x[n],x[n]], 'C2')
+    if trough == 0:
+        return t[p], x[p]
+    else:
+        return t[p], x[p] - x[n]
+
+
 class Attributes(object):
     def __init__(self, shape):
         super().__setattr__('attributes', {})

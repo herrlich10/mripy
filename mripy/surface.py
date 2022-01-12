@@ -763,7 +763,11 @@ class Surface(object):
             surf_mask = afni.infer_surf_dset_variants(surf_mask, hemis=self.hemis)
         pc = utils.PooledCaller()
         for hemi, dset in in_files.items():
-            surf_file = f"{self.suma_dir}/{hemi}.{self.surfs[0]}{self.surf_ext}"
+            # TODO: For smaller distortion, maybe we should use smoothwm whenever possible??
+            # Or even the middle surface...
+            surf_file = f"{self.suma_dir}/{hemi}.smoothwm{self.surf_ext}"
+            if not path.exists(surf_file):
+                surf_file = f"{self.suma_dir}/{hemi}.{self.surfs[0]}{self.surf_ext}"
             output = f"{out_dir}{hemi}.{prefix}.niml.dset"
             if method is None:
                 raise NotImplementedError
