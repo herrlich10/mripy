@@ -4,6 +4,7 @@ function [dcm, est, vis] = mripy_plot_DCM(dcm, est, vis)
 %   dcm: Basic information
 %   ----------------------
 %   The following are the only thing that you must specify for each plot:
+%
 %   dcm.a: The 0/1 structure of connectivity
 %   dcm.b: The 0/1 existence of modulatory effect
 %   dcm.c: The 0/1 existence of driving input
@@ -16,24 +17,82 @@ function [dcm, est, vis] = mripy_plot_DCM(dcm, est, vis)
 %   dcm.font_size: Font size for node labels. Default 18
 %   dcm.P_th: Significance threshold for posterior probability. Default 0.95
 %
-%   est: Esitmated parameters
-%   -------------------------
+%   est: Esitmated parameters (optional)
+%   ------------------------------------
+%   If est is not provided, this function will generate a schematic diagram
+%   illustrating the structure of the model. The linewidth/markersize of the
+%   connections will not be scaled according to the estimated parameters.
+%
 %   est.A: Estimated parameter values
 %   est.B:
 %   est.C:
-%   est.PA: Posterior probability of parameters
+%   est.PA: Posterior probability of parameters (may also be 1-p for ttest)
 %   est.PB:
 %   est.PC:
 %   
 %   (Optional)
-%   est.Amax, est.Amin, est.Bmax, est.Bmin, est.Cmax, est.Cmin: Value limits for 
+%   est.Amax, est.Amin, est.Bmax, est.Bmin, est.Cmax, est.Cmin: 
+%       Value limits for normalizing visual element size (linewidth, markersize, etc.)
+%       These can be manually set if you want, e.g., B and C share the same
+%       scale for linewidth. 
+%   est.normA, est.normB, est.normC: 
+%       Normalization function x_norm = normX(x), default is @(x)(x-Xmin)./(Xmax-Xmin)
 %
-%   vis: Visual elements (color, style, alpha, location, show/hide, etc.)
-%   ---------------------------------------------------------------------
-%   
+%   vis: Visual elements (color, style, alpha, location, show/hide, etc., optional)
+%   -------------------------------------------------------------------------------
+%   This optional argument allow you to customize the look and feel of the plot.
+%
+%   vis.mode: 'standard' (default) | 'single-modulatory'
+%       Select which one of two kinds of plot will be generatd.
+%       'standard' plots as much information as possible about A, B, C in one figure.
+%           A and C are plotted as arrows, B are plotted as dots.
+%           Multiple inputs are shown as different pairs of colors.
+%           This is a quicker way to show all results at once.
+%       'single-modulatory' only plots a single modulatory effect, i.e., B(:,:,vis.input)
+%           One selected B is plotted as arrows.
+%           This is more suitable for final publication as it is clean and clear.
+%   vis.input: int
+%       Select which input to plot in 'single-modulatory' mode.
+%   vis.conn_colors:
+%   vis.conn_styles:
+%   vis.conn_alphas:
+%   vis.input_colors:
+%   vis.input_styles:
+%   vis.max_width: Max linewidth for connections
+%   vis.min_width: Min linewidth for connections
+%   vis.mod_offset:
+%   vis.show_ns_BC:
+%   vis.show_legend: Whether to show legend for linewidth and color ('single-modulatory' mode only)
+%   vis.conn_values: Text label to show for each connection ('single-modulatory' mode only)
+%       The values can be different from est.B(:,:,vis.input), which are used for linewidth.
+%       Usually, we use z value for linewidth, and actual value for labels.
+%   vis.conn_label_x:
+%   vis.conn_label_y:
+%
 %   EXAMPLES
 %   --------
-%   
+%   % Plot model structure
+%   dcm.node_size = 7;
+%   dcm.font_size = 10;
+%   dcm.labels = {'V1', 'V4', 'aIPS', 'Pul'};
+%   dcm.layout = [0,0; sqrt(3),1; 0,2; -2,1]*dcm.node_size*1.5;
+%   dcm.a = GCM{1,1}.a;
+%   dcm.b = GCM{1,1}.b;
+%   dcm.c = GCM{1,1}.c;
+%   mripy_plot_DCM(dcm);
+%
+%   % Plot simple group mean for A, B, C
+%   est1 = mripy_est_from_GCM(GCM);
+%   vis.show_ns_BC = true;
+%   mripy_plot_DCM(dcm, est1, vis);
+%
+%   % Plot PEB BMA results for B(:,:,2)
+%   est2 = mripy_est_from_PEB_BMA(BMA_B_search);
+%   est3 = mripy_est_from_PEB_BMA(BMA_B_search, true);
+%   vis = struct('mode', 'single-modulatory', 'input', 2);
+%   vis.conn_values = est2.B(:,:,vis.input);
+%   [~,~,vis] = mripy_plot_DCM(dcm, est3, vis);
+%   vis.legend.Position = vis.legend.Position + [0.05, 0, 0, 0];
 
     % dcm
     n_rois = size(dcm.a, 1);

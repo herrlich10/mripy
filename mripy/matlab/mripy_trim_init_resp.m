@@ -1,4 +1,4 @@
-function trimmed = trim_init_resp(x, trim, run_len)
+function trimmed = mripy_trim_init_resp(x, trim, run_len)
 % Trim the initial TRs of each run.
 % 2021-03-05: Created by qcc
     assert(mod(length(x), run_len)==0);

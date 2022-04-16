@@ -80,6 +80,8 @@ def first_peak(t, x, after=2, trough='before', sg_win=41, sg_order=3, visualize=
     '''
     y = signal.savgol_filter(x, sg_win, sg_order)
     if visualize:
+        if ax is None:
+            ax = plt.gca()
         plt.sca(ax)
         plt.plot(t, x, 'C0')
         plt.plot(t, y, 'C1')
@@ -335,7 +337,7 @@ class RawCache(utils.Savable, object):
             mask = self.mask.pick(selector)
         raws = []
         for idx in ids:
-            raw = self.raws[idx].copy()
+            raw = self.raws[idx].copy() # TODO: Note that the data is not copied
             raw.data = raw.data[selector]
             raw.mask = mask
             raws.append(raw)
@@ -411,7 +413,7 @@ def read_events(event_files):
     return events_list, event_id
 
 
-def events_from_dataframe(df, time, conditions, duration=None, run=None, event_id=None):
+def events_from_dataframe(df, time, conditions, duration=None, run=None, n_runs=None, event_id=None):
     '''
     Parameters
     ----------
@@ -436,8 +438,12 @@ def events_from_dataframe(df, time, conditions, duration=None, run=None, event_i
     get_duration = lambda trial: 0 if duration is None else getattr(trial, duration)
     if run is not None:
         events = []
-        for r in sorted(df[run].unique()): # Uniques are returned in order of appearance (NOT sorted).
-            events.append(np.array([[getattr(trial, time), get_duration(trial), get_event_id(trial)] for trial in df[df[run]==r].itertuples()]))
+        if n_runs is not None:
+            for r in range(n_runs):
+                events.append(np.array([[getattr(trial, time), get_duration(trial), get_event_id(trial)] for trial in df[df[run]==r].itertuples()]))
+        else:
+            for r in sorted(df[run].unique()): # Uniques are returned in order of appearance (NOT sorted).
+                events.append(np.array([[getattr(trial, time), get_duration(trial), get_event_id(trial)] for trial in df[df[run]==r].itertuples()]))
     else:
         events = np.array([[getattr(trial, time), get_duration(trial), get_event_id(trial)] for trial in df.itertuples()])
     return events, event_id

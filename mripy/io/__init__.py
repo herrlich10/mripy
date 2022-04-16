@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import print_function, division, absolute_import, unicode_literals
 import sys, os, subprocess
-import re, glob, shlex, shutil, tempfile, warnings
+import re, glob, shlex, shutil, tempfile, gzip, warnings
 import collections, itertools, copy
 import random, string
 from os import path
@@ -728,6 +728,52 @@ def read_stim(fname):
         return [np.array([]) if line[0] == '*' else np.float_(line.split()) for line in fi if line.strip()]
 
 
+# ========== gzip ==========
+def compress(in_file, out_file=None):
+    if out_file is None:
+        out_file = in_file + '.gz'
+    with open(in_file, 'rb') as f_in:
+        with gzip.open(out_file, 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+    return out_file
+
+
+def decompress(in_file, out_file=None):
+    if out_file is None:
+        out_file, ext = path.splitext(in_file)
+        assert(ext in ['.gz'])
+    with gzip.open(in_file, 'rb') as f_in:
+        with open(out_file, 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+    return out_file
+    
+
+class unzipped(object):
+    def __init__(self, zip_file):
+        '''
+        Generate a temporary unzipped file for operation.
+        Do nothing if zip_file does not end with '.gz'.
+
+        with unzipped('test.nii.gz') as fname:
+            change_dim_order(fname, dim_order='timeseries')
+        '''
+        self.in_file = zip_file
+        self.zipped = path.splitext(self.in_file)[1] in ['.gz']
+        
+    def __enter__(self):
+        if self.zipped:
+            self.fname = utils.temp_prefix() + path.splitext(self.in_file)[0]
+            decompress(self.in_file, self.fname)
+            return self.fname
+        else:
+            return self.in_file
+
+    def __exit__(self, type, value, traceback):
+        if self.zipped:
+            compress(self.fname, self.in_file)
+            os.remove(self.fname)
+
+
 # ========== NIFTI ==========
 def read_nii(fname, return_img=False):
     if fname[-4:] != '.nii' and fname[-7:] != '.nii.gz':
@@ -786,7 +832,7 @@ def change_space(in_file, out_file=None, space=None, method='nibabel'):
     if method == 'nibabel':
         if out_file is None:
             prefix, ext = afni.split_out_file(in_file)
-            out_file = f"{prefix}.nii"
+            out_file = f"{prefix}.nii" if ext not in ['.nii', '.nii.gz'] else in_file
         vol, img = read_vol(in_file, return_img=True)
         # write_nii(out_file, vol, base_img=img, space=space)
         # To work-around a strang bug in nibabel when overwriting an existing volume in linux,
@@ -841,13 +887,16 @@ def change_dim_order(in_file, out_file=None, dim_order=None, method='afni'):
     if method == 'nibabel':
         if out_file is None:
             prefix, ext = afni.split_out_file(in_file)
-            out_file = f"{prefix}.nii"
+            out_file = f"{prefix}.nii" if ext not in ['.nii', '.nii.gz'] else in_file
         vol, img = read_vol(in_file, return_img=True)
         dim = img.header['dim']
         write_nii(out_file, vol, base_img=img, dim=get_new_dim(dim, dim_order))
     elif method == 'afni':
-        dim = afni.get_nifti_field(in_file, 'dim', 'int')
-        afni.set_nifti_field(in_file, 'dim', get_new_dim(dim, dim_order), out_file=out_file)
+        # AFNI's nifti_tool can't modify Gzipped NIfTI
+        # https://afni.nimh.nih.gov/afni/community/board/read.php?1,167405,167441#msg-167441
+        with unzipped(in_file) as fname:
+            dim = afni.get_nifti_field(fname, 'dim', 'int')
+            afni.set_nifti_field(fname, 'dim', get_new_dim(dim, dim_order), out_file=out_file)
 
 
 # ========== AFNI HEAD/BRIK ==========
@@ -1238,8 +1287,11 @@ class Mask(object):
                 self.value = read_nii(self.master).ravel('F') # [x,y,z], x changes the fastest. Also, NIFTI read/write data in 'F'.
             else:
                 self.value = read_afni(self.master).ravel('F')
-            if kind == 'mask':
-                idx = self.value > 0 # afni uses Fortran index here
+            if kind in ['mask', 'nonzero']:
+                if kind == 'mask':
+                    idx = self.value > 0 # afni uses Fortran index here
+                elif kind == 'nonzero':
+                    idx = self.value != 0
                 self.value = self.value[idx]
                 self.index = np.arange(np.prod(self.IJK))[idx]
             elif kind == 'full':
@@ -1275,11 +1327,11 @@ class Mask(object):
         return mask
 
     @classmethod
-    def from_files(cls, files, combine='union'):
-        mask = cls(files[0])
+    def from_files(cls, files, combine='union', **kwargs):
+        mask = cls(files[0], **kwargs)
         mask.value[:] = 1
         for k in range(1, len(files)):
-            mask2 = cls(files[k])
+            mask2 = cls(files[k], **kwargs)
             mask2.value[:] = 2**k
             if combine == 'union':
                 mask = mask + mask2

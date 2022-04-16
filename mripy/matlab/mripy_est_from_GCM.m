@@ -4,7 +4,7 @@ function est = mripy_est_from_GCM(GCM, norm)
     if nargin < 2
         norm = false;
     end
-    if norm % Ep./Cp
+    if norm % Ep./sqrt(Cp)
         DCM = GCM{1,1};
         index = [];
         count = 0;
@@ -43,5 +43,5 @@ function Ep = Ep_div_Cp(DCM, X, index)
     Ep = DCM.Ep.(X);
     Cp = full(DCM.Cp(sub2ind(size(DCM.Cp), index.(X), index.(X))));
     I = DCM.(lower(X))>0.5;
-    Ep(I) = Ep(I)./Cp;
+    Ep(I) = Ep(I)./sqrt(Cp); % Fixed bug (20220415): miss sqrt
 end

@@ -1,4 +1,4 @@
-function D = diagnose_DCM(GCM)
+function D = mripy_diagnose_DCM(GCM)
 % Diagnose the goodness-of-fit of DCMs.
 % 
 % Return a table, in which each row is a DCM (for one subject) and the
