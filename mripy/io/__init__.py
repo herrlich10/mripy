@@ -1279,23 +1279,26 @@ class MaskDumper(object):
 
 class Mask(object):
     def __init__(self, master=None, kind='mask'):
-        self.master = master
-        self.value = None
-        if self.master is not None:
-            self._infer_geometry(self.master)
-            if master.endswith('.nii') or master.endswith('.nii.gz'):
-                self.value = read_nii(self.master).ravel('F') # [x,y,z], x changes the fastest. Also, NIFTI read/write data in 'F'.
-            else:
-                self.value = read_afni(self.master).ravel('F')
-            if kind in ['mask', 'nonzero']:
-                if kind == 'mask':
-                    idx = self.value > 0 # afni uses Fortran index here
-                elif kind == 'nonzero':
-                    idx = self.value != 0
-                self.value = self.value[idx]
-                self.index = np.arange(np.prod(self.IJK))[idx]
-            elif kind == 'full':
-                self.index = np.arange(np.prod(self.IJK))
+        if isinstance(master, Mask): # Copy
+            self.__dict__ = copy.deepcopy(master).__dict__
+        else:
+            self.master = master
+            self.value = None
+            if self.master is not None:
+                self._infer_geometry(self.master)
+                if master.endswith('.nii') or master.endswith('.nii.gz'):
+                    self.value = read_nii(self.master).ravel('F') # [x,y,z], x changes the fastest. Also, NIFTI read/write data in 'F'.
+                else:
+                    self.value = read_afni(self.master).ravel('F')
+                if kind in ['mask', 'nonzero']:
+                    if kind == 'mask':
+                        idx = self.value > 0 # afni uses Fortran index here
+                    elif kind == 'nonzero':
+                        idx = self.value != 0
+                    self.value = self.value[idx]
+                    self.index = np.arange(np.prod(self.IJK))[idx]
+                elif kind == 'full':
+                    self.index = np.arange(np.prod(self.IJK))
 
     def _infer_geometry(self, fname):
         self.IJK = afni.get_DIMENSION(fname)[:3]
@@ -1304,8 +1307,11 @@ class Mask(object):
     def to_dict(self):
         return dict(master=self.master, value=self.value, index=self.index, IJK=self.IJK, MAT=self.MAT)
 
-    def to_file(self, fname):
-        self.undump(fname, np.ones(len(self.index), dtype=np.float32))
+    def to_file(self, fname, undump_value=False):
+        if undump_value:
+            self.undump(fname, self.value)
+        else:
+            self.undump(fname, np.ones(len(self.index), dtype=np.float32))
 
     @classmethod
     def from_dict(cls, d):
@@ -1337,6 +1343,11 @@ class Mask(object):
                 mask = mask + mask2
             elif combine == 'intersect':
                 mask = mask * mask2
+            elif combine == 'probability':
+                mask2.value[:] = 1
+                mask = mask + mask2
+        if combine == 'probability':
+            mask.value = mask.value / len(files)
         return mask
 
     @classmethod

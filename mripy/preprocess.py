@@ -1621,12 +1621,16 @@ def apply_ants(transforms, base_file, in_file, out_file, interp=None, dim=None, 
             -o {outputs['out_file']} \
             {' '.join(xform_cmds)}")
     else: # Apply transforms to image (e.g., 3D volume)
+        # Expected meta
+        n_volumes = afni.get_dims(in_file)[3]
+        dim_order = io.get_dim_order(in_file)
+        space = io.get_space(base_file)
         if dim is None:
             dim = 3
         if image_type is None: # 0/1/2/3 for scalar/vector/tensor/time-series
-            image_type = 3 if afni.get_dims(in_file)[3] > 1 else 0
+            image_type = 3 if n_volumes > 1 else 0
         # Make sure the image is timeseries, rather than afni bucket, during transform
-        is_bucket = (io.get_dim_order(in_file) == 'bucket')
+        is_bucket = (dim_order == 'bucket')
         if is_bucket:
             io.change_dim_order(in_file, dim_order='timeseries', method='afni') # Change in_file into timeseries
         # Sanitize base_file
@@ -1642,13 +1646,17 @@ def apply_ants(transforms, base_file, in_file, out_file, interp=None, dim=None, 
         if is_temp:
             os.remove(sanitized_base)
         # Make sure out_file is of the same space as base_file
-        io.change_space(outputs['out_file'], space=io.get_space(base_file), method='nibabel') # Causion: Cannot use "afni" here...
+        io.change_space(outputs['out_file'], space=space, method='nibabel') # Causion: Cannot use "afni" here...
         # Copy afni subbrick labels
         # This must go last because io.change_space(method='nibabel') will recreate the volume without afni metadata
         try:
             afni.set_brick_labels(outputs['out_file'], afni.get_brick_labels(in_file))
         except: # TODO: In case the file doesn't have labels
             pass
+        # Sanity check for meta after transform
+        assert(afni.get_dims(outputs['out_file'])[3] == n_volumes)
+        assert(io.get_dim_order(outputs['out_file']) == dim_order)
+        assert(io.get_space(outputs['out_file']) == space)
     all_finished(outputs)
     return outputs
 
