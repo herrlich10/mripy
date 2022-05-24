@@ -641,9 +641,10 @@ class Surface(object):
         out_dir, prefix, ext = afni.split_out_file(out_file, split_path=True, trailing_slash=True)
         output_1D = '.1D' in ext
         pc = utils.PooledCaller()
-        for hemi in self.hemis:
-            fo_niml = f"{out_dir}{hemi}.{prefix}.niml.dset"
-            fo_1D = f"{out_dir}{hemi}.{prefix}.1D.dset"
+        out_files = afni.infer_surf_dset_variants(f"{prefix}{ext}", hemis=self.hemis)
+        for hemi, out_file in out_files.items():
+            fo_niml = f"{out_dir}{afni.get_prefix(out_file)}.niml.dset"
+            fo_1D = f"{out_dir}{afni.get_prefix(out_file)}.1D.dset"
             out_1D_cmd = f"-out_1D {fo_1D}" if output_1D else ''
             pc.run(f"3dVol2Surf \
                 -spec {self.specs[hemi]} \

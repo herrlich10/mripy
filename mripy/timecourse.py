@@ -785,9 +785,9 @@ def concatinate_epochs(epochs_list, axis=0):
     return inst
 
 
-def group_epochs(epochs_list):
+def group_epochs(epochs_list, pool_feature=True):
     inst = epochs_list[0].copy()
-    inst.data = np.concatenate([epochs[event].aggregate(event=True, feature=True, keepdims=True) 
+    inst.data = np.concatenate([epochs[event].aggregate(event=True, feature=pool_feature, keepdims=True) 
         for epochs in epochs_list for event in inst.event_id], axis=0)
     inst.events = np.array(list(inst.event_id.values())*len(epochs_list))
     inst.events = np.c_[np.zeros((len(inst.events),2)), inst.events]

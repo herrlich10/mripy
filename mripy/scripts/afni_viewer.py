@@ -129,6 +129,8 @@ if __name__ == '__main__':
         args.coronalimage = ''
 
     # print(args)
+    # https://stackoverflow.com/questions/48657710/dyld-library-path-and-ld-library-path-cannot-be-used-by-pythons-os-and-subproce
+    flat_namespace = 'export DYLD_LIBRARY_PATH=/opt/X11/lib/flat_namespace; ' # macOS SIP purges DYLD_LIBRARY_PATH environ for security
     environ = {'AFNI_NOSPLASH': 'YES'}
     if args.olay_off:
         olay_cmd = 'SET_FUNC_VISIBLE A.-'
@@ -176,7 +178,8 @@ if __name__ == '__main__':
         xyz_cmd=xyz_cmd)
     print(afni_cmd)
     if not args.dry:
-        subprocess.Popen(afni_cmd, env=dict(os.environ, **environ), shell=True) # subprocess.call(cmd, shell=True)
+        # subprocess.call(afni_cmd, shell=True)
+        subprocess.Popen(flat_namespace + afni_cmd, env=dict(os.environ, **environ), shell=True) 
 
     if args.suma is not None and args.suma.lower() not in ['none', 'off'] :
         if not args.spec or not path.exists(path.join(args.suma_dir, args.spec)):

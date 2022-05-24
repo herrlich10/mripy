@@ -316,7 +316,7 @@ def apply_transforms(transforms, base_file, in_file, out_file, interp=None, res=
         # and should reduce the smoothing artifacts (see 3dAllineate)
         utils.run(f"3dAllineate -final {interp} -base {base_file} {res_cmd} \
             -1Dmatrix_apply {combined} -input {in_file} \
-            -prefix {out_file} -overwrite", error_whitelist='(?:dimensions altere)|(?:AFNI converts NIFTI_datatype)')
+            -prefix {out_file} -overwrite", error_whitelist='(?:dimensions altere)|(?:AFNI converts NIFTI_datatype)|(?:\*\* WARNING)')
         if not save_xform:
             os.remove(combined)
 
