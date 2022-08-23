@@ -63,13 +63,13 @@ def create_times(tmin, tmax, dt):
 def create_ERP(t, x, events, tmin=-8, tmax=16, dt=0.1, baseline=[-2,0], interp='linear'):
     '''
     t : time for each data point (can be non-contiguous)
-    x : [event, feature, time]
+    x : [feature, time]
     events : event onset time (can be on non-integer time point)
     '''
     times = create_times(tmin, tmax, dt)
     f = interpolate.interp1d(t, x, axis=-1, kind=interp, fill_value=np.nan, bounds_error=False)
     base_corr = create_base_corr_func(times, baseline=baseline)
-    ERP = np.zeros(np.r_[len(events), x.shape[1:-1], len(times)].astype(int), dtype=x.dtype)
+    ERP = np.zeros(np.r_[len(events), x.shape[:-1], len(times)].astype(int), dtype=x.dtype)
     for k, t in enumerate(events):
         ERP[k] = base_corr(f(np.arange(t+tmin, t+tmax+dt/2, dt)))
     return ERP, times

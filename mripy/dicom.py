@@ -344,7 +344,6 @@ def parse_series_info(dicom_files, dicom_ext=None, parser=None, return_headers=F
     return info
 
 
-
 if __name__ == '__main__':
     print(parse_dicom_header('20180626_S18_EP2DBR_S07.MR.S18_APPROVED.0010.0001.2018.06.26.12.47.59.31250.120791562.IMA'))
     print(parse_dicom_header('20180918_S18_FACEID_VIS_S01.MR.S18_APPROVED.0007.0001.2018.09.18.15.52.59.828125.140479.IMA'))

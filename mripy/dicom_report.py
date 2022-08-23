@@ -3,6 +3,8 @@
 import inspect, re, glob
 from os import path
 from collections import OrderedDict
+from tkinter.messagebox import NO
+import numpy as np
 import pandas as pd
 from . import dicom
 
@@ -84,6 +86,35 @@ def inspect_mp2rage(data_dir, subdir_pattern='T1??'):
         df.append(OrderedDict(session=path.basename(sess_dir), resolution='x'.join(f'{d:g}' for d in info['resolution']), 
             ref_amp=info['ReferenceAmplitude'], coil=info['TransmittingCoil'], n_images=len(T1_folders)))
     return pd.DataFrame(df)
+
+
+def remove_duplicate_parts(folders):
+    parts = [folder.split('/') for folder in folders]
+    try:
+        df = pd.DataFrame(parts)
+        df = df[[col for col in df.columns if len(df[col].unique()) > 1]] # Remove all-identical parts
+        return ['/'.join(list(row)[1:]) for row in df.itertuples()]
+    except:
+        return folders
+
+
+def pares_patent_age(age):
+    if age.endswith('Y'):
+        return int(age[:-1])
+    else:
+        return age.lstrip('0')
+
+
+def print_subject_info(dir_pattern, exclude=None):
+    folders = sorted(glob.glob(dir_pattern))
+    infos = [dicom.parse_series_info(folder) for folder in folders]
+    df = pd.DataFrame(infos, columns=['PatentName', 'PatientSex', 'PatientAge'])
+    df.insert(0, 'Subject', remove_duplicate_parts(folders))
+    df['PatientAge'] = [pares_patent_age(age) for age in df.PatientAge]
+    if exclude is not None:
+        df = df.query(f"Subject not in {exclude}")
+    print(f"{len(df)} subjects ({sum(df.PatientSex=='F')} female, ages {min(df.PatientAge)}–{max(df.PatientAge)})")
+    return df
 
 
 if __name__ == '__main__':
