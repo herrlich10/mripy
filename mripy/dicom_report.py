@@ -16,6 +16,7 @@ preset4sequence = {
     'tfl3d1_ns': 'mp2rage',
     'fl2d1': 'gre',
     'tfi2d1': 'ssfp2d',
+    'tfi3d1_79': 'ssfp3d',
 }
 
 
@@ -72,6 +73,8 @@ def report_parameters(dicom_folder, preset=None, return_preset=False, return_inf
     elif preset.lower() in ['gre']:
         report = oneline(f'''T2*-weighted {ND} gradient-echo sequence ({TR}, {TE}, {FA}, {voxel_size}, {FOV}, {n_slices}, {bandwidth}{PF}{GRAPPA}).''')
     elif preset.lower() in ['ssfp2d']:
+        report = oneline(f'''{ND} SSFP sequence ({TR}, {TE}, {FA}, {voxel_size}, {FOV}, {n_slices}, {bandwidth}{PF}{GRAPPA}).''')
+    elif preset.lower() in ['ssfp3d']:
         report = oneline(f'''{ND} SSFP sequence ({TR}, {TE}, {FA}, {voxel_size}, {FOV}, {n_slices}, {bandwidth}{PF}{GRAPPA}).''')
     res = (report,) + ((preset,) if return_preset else ()) + ((info,) if return_info else ())
     return res if len(res) > 1 else res[0]

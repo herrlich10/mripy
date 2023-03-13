@@ -226,7 +226,7 @@ def immediate_neighbors(verts, faces, mask=None, return_array=False):
     return neighbors
 
 
-def interp_over_mesh(verts, faces, indices, values, radius=3, neighbors=None, n_verts=None):
+def interp_over_mesh(verts, faces, indices, values, radius=3, neighbors=None, n_verts=None, interp='mean'):
     '''
     By reusing precomputed neighbors (multiprocessing.Array) and n_verts, 
     one can use inter-process memory sharing to efficiently interpolate multiple dsets in parallel.
@@ -241,32 +241,50 @@ def interp_over_mesh(verts, faces, indices, values, radius=3, neighbors=None, n_
     if isinstance(neighbors, ctypes.Array): # For shared memory parallelism
         neighbors = np.frombuffer(neighbors, dtype=np.int32).reshape(n_verts,-1)
         for idx in range(n_verts):
-            nbhd = set(neighbors[idx,1:neighbors[idx,0]])
-            new_nbhd = nbhd
-            for _ in range(1, radius):
-                ext_nbhd = set()
-                for nb in new_nbhd:
-                    ext_nbhd.update(neighbors[nb,1:neighbors[nb,0]])
-                new_nbhd = ext_nbhd.difference(nbhd)
-                nbhd.update(ext_nbhd)
-            new_val[idx] = np.mean([values[nb] for nb in nbhd if nb in indices_set])
+            if interp == 'mean':
+                nbhd = set(neighbors[idx,1:neighbors[idx,0]])
+                new_nbhd = nbhd
+                for _ in range(1, radius):
+                    ext_nbhd = set()
+                    for nb in new_nbhd:
+                        ext_nbhd.update(neighbors[nb,1:neighbors[nb,0]])
+                    new_nbhd = ext_nbhd.difference(nbhd)
+                    nbhd.update(ext_nbhd)
+                new_val[idx] = np.mean([values[nb] for nb in nbhd if nb in indices_set])
+            elif interp == 'nearest':
+                # Bug: We are not using geodesic distance here
+                # But use the number of neighborhood iterations as a simple proxy for distance
+                nbhd = {nb: 1 for nb in neighbors[idx,1:neighbors[idx,0]]} # index->distance
+                new_nbhd = nbhd
+                for r in range(2, radius+1):
+                    ext_nbhd = set()
+                    for nb in new_nbhd:
+                        ext_nbhd.update(neighbors[nb,1:neighbors[nb,0]])
+                    ext_nbhd = ext_nbhd.difference(nbhd)
+                    nbhd.update({nb: r for nb in ext_nbhd})
+                    new_nbhd = ext_nbhd
+                v, d = np.array([[values[nb], d] for nb, d in nbhd.items() if nb in indices_set]).T
+                new_val[idx] = v[np.argmin(d)]
     else: # neighbors is a list of sets
         for idx in range(n_verts):
-            nbhd = neighbors[idx].copy()
-            new_nbhd = nbhd
-            for _ in range(1, radius):
-                ext_nbhd = set()
-                for nb in new_nbhd:
-                    ext_nbhd.update(neighbors[nb])
-                new_nbhd = ext_nbhd.difference(nbhd)
-                nbhd.update(ext_nbhd)
-            # new_val[idx] = np.mean(values[np.isin(indices, list(nbhd))])
-            # The above code is slow again...
-            new_val[idx] = np.mean([values[nb] for nb in nbhd if nb in indices_set])
+            if interp == 'mean':
+                nbhd = neighbors[idx].copy()
+                new_nbhd = nbhd
+                for _ in range(1, radius):
+                    ext_nbhd = set()
+                    for nb in new_nbhd:
+                        ext_nbhd.update(neighbors[nb])
+                    new_nbhd = ext_nbhd.difference(nbhd)
+                    nbhd.update(ext_nbhd)
+                # new_val[idx] = np.mean(values[np.isin(indices, list(nbhd))])
+                # The above code is slow again...
+                new_val[idx] = np.mean([values[nb] for nb in nbhd if nb in indices_set])
+            elif interp == 'nearest':
+                raise NotImplementedError
     return new_val
 
 
-def interp_dset(fdset, fmesh, prefix):
+def interp_dset(fdset, fmesh, prefix, **kwargs):
     '''
     `fmesh` can be either:
     - fname for a high density surface mesh
@@ -275,9 +293,9 @@ def interp_dset(fdset, fmesh, prefix):
     indices, values = io.read_niml_bin_nodes(fdset)
     if isinstance(fmesh, six.string_types):
         verts, faces = io.read_surf_mesh(fmesh)
-        new_val = interp_over_mesh(verts, faces, indices, values)
+        new_val = interp_over_mesh(verts, faces, indices, values, **kwargs)
     else: # fmesh = (neighbors, n_verts), for shared memory parallelism
-        new_val = interp_over_mesh(None, None, indices, values, neighbors=fmesh[0], n_verts=fmesh[1])
+        new_val = interp_over_mesh(None, None, indices, values, neighbors=fmesh[0], n_verts=fmesh[1], **kwargs)
     io.write_niml_bin_nodes(utils.fname_with_ext(prefix, '.niml.dset'), np.arange(new_val.shape[0]), new_val)
 
 

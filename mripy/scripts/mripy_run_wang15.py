@@ -56,7 +56,7 @@ if __name__ == '__main__':
         epilog=textwrap.dedent(f'''
         Examples
         --------
-        1) 
+        1) mripy_run_wang15.py -s SubjID
 
         References
         ----------
