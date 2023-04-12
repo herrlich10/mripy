@@ -590,7 +590,7 @@ def parse_series_info(fname, timestamp=False, shift_time=None, series_pattern=SE
     return info
 
 
-def convert_dicom(dicom_dir, out_file=None, dicom_ext=None, interactive=False):
+def convert_dicom(dicom_dir, out_file=None, dicom_ext=None, interactive=False, extra_cmd=None):
     if dicom_ext is None:
         dicom_ext = '.IMA'
     if out_file is None:
@@ -607,9 +607,10 @@ def convert_dicom(dicom_dir, out_file=None, dicom_ext=None, interactive=False):
         with open('uniq_image_list.txt', 'w') as fo:
             subprocess.check_call(['uniq_images'] + glob.glob('*'+dicom_ext), stdout=fo) # Prevent shell injection by not using shell=True with user defined string
         interactive_cmd = '' if interactive else '-gert_quit_on_err'
-        utils.run("Dimon -infile_list uniq_image_list.txt \
-            -gert_create_dataset -gert_outdir '{0}' -gert_to3d_prefix '{1}' -overwrite \
-            -dicom_org -use_obl_origin -save_details Dimon.details {2}".format(out_dir, prefix+ext, interactive_cmd))
+        utils.run(f"Dimon -infile_list uniq_image_list.txt \
+            -gert_create_dataset -gert_outdir '{out_dir}' -gert_to3d_prefix '{prefix+ext}' -overwrite \
+            -dicom_org -use_obl_origin -save_details Dimon.details {interactive_cmd} \
+            {extra_cmd if extra_cmd is not None else ''}")
     finally:
         os.chdir(old_path)
 
