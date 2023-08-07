@@ -3,7 +3,7 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
 import os, shutil, ctypes, multiprocessing
 from os import path
-import parser
+import ast
 from itertools import chain
 from scipy import spatial
 import numpy as np
@@ -523,7 +523,10 @@ def _surface_calc(expr=None, out_file=None, _consider_all=False, **kwargs):
     Different input dsets are allowed to have different nodes coverage.
     Only values on shared nodes are returned or written.
     '''
-    used = parser.expr(expr).compile().co_names # Parse variables in `expr`
+    # `parser` is deprecated and removed in Python 3.10
+    # used = parser.expr(expr).compile().co_names # Parse variables in `expr`
+    tree = ast.parse(expr)
+    used = [node.id for node in ast.walk(tree) if isinstance(node, ast.Name)]
     variables = {}
     shared_nodes = None
     for var, fname in kwargs.items():

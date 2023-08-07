@@ -1430,6 +1430,9 @@ def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask
     '''
     Nonlinearly align `in_file` to `base_file` using ANTs' SyN method via antsRegistration.
 
+    The default preset can be used for both within- and cross-modality nonlinear registration, 
+    i.e., for both T1-to-T1 and EPI-to-T1 (more precisely, T2*-to-T1) deformable alignment.
+
     Examples
     --------
     1. Align MNI template to T1_al using default preset. Skullstrip T1_al. 
@@ -1441,6 +1444,8 @@ def align_ants(base_file, in_file, out_file, strip=None, base_mask=None, in_mask
 
     Parameters
     ----------
+    strip : str
+        'base' | 'input' | 'both'
     preset : str
         None | 'default' | 'test' | 'path/to/my/preset.json'
         For production, just leave it as None or use the 'default' presest (est. time: 3 hr).
