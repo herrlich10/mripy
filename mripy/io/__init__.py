@@ -780,7 +780,9 @@ def read_nii(fname, return_img=False):
     if fname[-4:] != '.nii' and fname[-7:] != '.nii.gz':
         fname = fname + '.nii'
     img = nibabel.load(fname)
-    vol = img.get_data()
+    # vol = img.get_data()
+    vol = np.asanyarray(img.dataobj) # Equivalent to the deprecated "vol = img.get_data()" that gives minimum possible data size in memory
+    # vol = img.get_fdata() # get_data() is deprecated in favor of get_fdata(), which has a more predictable return type
     return (vol, img) if return_img else vol
 
 

@@ -8,3 +8,5 @@ pandas
 tables
 matplotlib
 seaborn
+joblib
+tqdm

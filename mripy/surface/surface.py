@@ -7,7 +7,7 @@ import ast
 from itertools import chain
 from scipy import spatial
 import numpy as np
-from . import six, afni, io, utils, _with_pylab
+from .. import six, afni, io, utils, _with_pylab
 
 
 def map_sequence(seq1, seq2):
