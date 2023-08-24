@@ -1011,7 +1011,11 @@ def write_gii(fname, verts, faces):
     verts = nibabel.gifti.GiftiDataArray(data=verts.astype('float32'), intent=nibabel.nifti1.intent_codes['NIFTI_INTENT_POINTSET'])
     faces = nibabel.gifti.GiftiDataArray(data=faces.astype('int32'), intent=nibabel.nifti1.intent_codes['NIFTI_INTENT_TRIANGLE'])
     img = nibabel.gifti.GiftiImage(darrays=[verts, faces])
-    nibabel.gifti.write(img, fname)
+    try: # The old way (api removed)
+        nibabel.gifti.write(img, fname)
+    except AttributeError: # The new way 
+        with open(fname, 'wb') as fo:
+            fo.write(img.to_xml())
 
 
 def read_label(fname):
