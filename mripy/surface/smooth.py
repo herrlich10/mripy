@@ -10,11 +10,11 @@ try:
     import cupy as cp
 except ModuleNotFoundError:
     pass
-from .. import io, dependency
+from .. import utils, io, dependency
 from .surface import create_surf_patch
 
 
-class ScalarValuedMesh(object):
+class ScalarValuedMesh(utils.Savable):
     def __init__(self, verts, faces, scalars, values=None):
         self.verts = verts    # List of vertices, e.g., [(x1,y1,z1), (x2,y2,z2), ...]
         self.faces = faces    # List of triangular faces, e.g., [(v1,v2,v3), (v4,v5,v6), ...]
@@ -209,7 +209,7 @@ def gpu_floyd_warshall(dist, directed=False, grid=(1024,), block=(1024,)):
     return cp.asnumpy(dist)
     
 
-class ValueSpecificSmoother(object):
+class ValueSpecificSmoother(utils.Savable):
     def __init__(self, surf_mesh_file, surf_value_file, values=None, transform=None, n_jobs=None, gpu=False):
         print('>> Loading surface mesh and values...', end='')
         verts, faces = io.read_surf_mesh(surf_mesh_file)

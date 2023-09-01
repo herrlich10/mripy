@@ -3,6 +3,7 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
 import sys, os, re, glob, shlex, string
 import subprocess, multiprocessing, ctypes, time, uuid
+import importlib
 import json
 import tables, warnings
 from datetime import datetime
@@ -447,9 +448,53 @@ class Savable(object):
             warnings.simplefilter('ignore', category=tables.NaturalNameWarning)
             dio.save(fname, self.to_dict())
 
+    def to_dict(self):
+        '''
+        Subclasses are expected to override this method if the data type of 
+        some attributes are not supported by deepdish (i.e., other than
+        int, float, str, list, tuple, dict, numpy array, pandas dataframe).
+        '''
+        # Save Savable meta information
+        meta = {
+            'module': self.__class__.__module__,
+            'class_name': self.__class__.__name__,
+        }
+        d = {'_Savable_meta': meta}
+        for k, v in self.__dict__.items():
+            # Recursively save child Savable object as dict
+            if isinstance(v, Savable):
+                d[k] = v.to_dict()
+            else:
+                d[k] = v
+        return d
+    
     @classmethod
     def load(cls, fname):
         return cls.from_dict(dio.load(fname))
+    
+    @classmethod
+    def from_dict(cls, d):
+        '''
+        Subclasses are expected to override this method if the data type of 
+        some attributes are not supported by deepdish, or a proper initialization
+        requires additional operations performed in __init__ but omitted here.
+        '''
+        inst = cls.__new__(cls) # Create instance without worry about __init__ arguments
+        dd = {}
+        for k, v in d.items():
+            # Discard Savable meta information
+            if k == '_Savable_meta':
+                pass
+            # Recursively recreate child Savable object
+            elif isinstance(v, dict) and '_Savable_meta' in v:
+                child_meta = v['_Savable_meta']
+                child_module = importlib.import_module(child_meta['module'])
+                child_cls = getattr(child_module, child_meta['class_name'])
+                dd[k] = child_cls.from_dict(v)
+            else:
+                dd[k] = v
+        inst.__dict__.update(dd)
+        return inst
 
 
 class Savable2(object):
