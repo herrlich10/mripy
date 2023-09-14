@@ -590,7 +590,8 @@ class SurfMask(object):
             shared = np.in1d(n, self.nodes)
             assert(np.all(n[shared]==self.nodes)) # Make sure nodes order are correspondent
             values.append(v[shared])
-        return np.array(values).T.squeeze()
+        # return np.array(values).T.squeeze() # Why transpose?
+        return np.array(values).squeeze()
 
     def to_file(self, fname):
         io.write_surf_data(fname, self.nodes, np.ones(len(self.nodes)))

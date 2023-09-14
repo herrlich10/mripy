@@ -22,7 +22,7 @@
 # SOFTWARE.
 
 from __future__ import print_function, division, absolute_import, unicode_literals
-import sys, os, shlex, time, textwrap, re
+import sys, os, shlex, time, textwrap, re, warnings
 import subprocess, multiprocessing, queue, threading, ctypes, uuid
 import numpy as np
 
@@ -365,7 +365,7 @@ class PooledCaller(object):
                 job = self._pid2job[self._idx2pid[res[0]]]
                 job['output'] = res[2]
 
-    def wait(self, pool_size=None, return_codes=False, return_jobs=False):
+    def wait(self, pool_size=None, return_codes=False, return_jobs=False, raise_when_failed=True):
         '''
         Wait for all jobs in the queue to finish.
         
@@ -412,7 +412,11 @@ class PooledCaller(object):
                                 job['successor'] = self._n_cmds
                                 self._n_cmds += 1
                             else: # No more retry, accept failure...
-                                raise RuntimeError(f">> job#{job['idx']} failed!\n Full output:\n {''.join(job['output'])}")
+                                msg = f">> job#{job['idx']} failed!\n Full output:\n {''.join(job['output'])}"
+                                if raise_when_failed:
+                                    raise RuntimeError(msg)
+                                else:
+                                    warnings.warn(msg, RuntimeWarning)
                         else: # Successful
                             self.res_queue.put([job['idx'], None]) # Return None to mimic callable behavior
                             self._fulfilled[job['uuid']] = job['log_idx'] # Marked as fulfilled, even with error (TODO: or shall I break all??)

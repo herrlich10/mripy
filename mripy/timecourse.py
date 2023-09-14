@@ -21,13 +21,13 @@ def get_HRF(name, TR=2, duration=32, normalize='area', **kwargs):
     ----------
     name : str
         Name of the hemodynamic response function model.
-        - 'canonical': difference of two gamma distribution functions
+        - 'canonical': difference of two gamma distribution functions [1]
             hrf = gamma.pdf(t, a1, scale=b1) - c*stats.gamma.pdf(t, a2, scale=b2)
             Acceptable kwargs are a1=6, b1=1, a2=16, b2=1, c=1/6.
             a1, a2 and b1, b2 are the shape and scale parameter of the two gammas,
             and c is the relative amplitude of the 2nd (negative) gamma.
             The default result matches the default spm_hrf result in SPM12.
-        - 'SPM': difference of two gamma, parameterized as in spm_hrf (SPM12)
+        - 'SPM': difference of two gamma, parameterized as in spm_hrf (SPM12) [2]
             Acceptable kwargs are P=[6,16,1,1,6,0,32], T=16. See spm_hrf for more.
             The conversion between 'canonical' and 'SPM' parameterizations:
             In scipy convention, larger scale parameter inplies wider distribution.
@@ -47,11 +47,15 @@ def get_HRF(name, TR=2, duration=32, normalize='area', **kwargs):
             In summary, the following two expressions are equivalent:
                 get_HRF('canonical', a1=a1, a2=a2, b1=b1, b2=b2, c=c)
                 get_HRF('SPM', P=[a1*b1, a2*b2, b1, b2, 1/c, 0, 32])
-        - 'GAM': one gamma (no undershoot), from AFNI 3dDeconvolve
+        - 'GAM': one gamma (no undershoot), from AFNI 3dDeconvolve [3]
                 hrf = (t/(p*q))^p * exp(p-t/q)
             Acceptable kwargs are p=8.6, q=0.547.
             The peak of 'GAM(p,q)' is at time p*q after the stimulus.
             The FWHM is about 2.35*sqrt(p)*q.
+        - 'TDM-early' and 'TDM-late': two-gamma model for the early and late 
+            HRF components in temporal decomposition through manifold fitting [4]
+            Note that the two HRF components should be fitted together in a GLM, 
+            although they have high correlation (~0.8).
     TR : float
         Sampling duration in seconds.
     duration : float
@@ -71,8 +75,14 @@ def get_HRF(name, TR=2, duration=32, normalize='area', **kwargs):
 
     References
     ----------
-    [1] https://github.com/spm/spm/blob/main/spm_hrf.m
-    [2] https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dDeconvolve.html
+    [1] Lindquist, M. A., Meng Loh, J., Atlas, L. Y., & Wager, T. D. (2009). 
+        Modeling the hemodynamic response function in fMRI: Efficiency, bias and 
+        mis-modeling. NeuroImage, 45(1, Supplement 1), S187–S198.
+    [2] https://github.com/spm/spm/blob/main/spm_hrf.m
+    [3] https://afni.nimh.nih.gov/pub/dist/doc/program_help/3dDeconvolve.html
+    [4] Kay, K., Jamison, K. W., Zhang, R.-Y., & Uğurbil, K. (2020). A temporal 
+        decomposition method for identifying venous effects in task-based fMRI. 
+        Nature Methods.
 
     Notes
     -----
@@ -92,13 +102,20 @@ def get_HRF(name, TR=2, duration=32, normalize='area', **kwargs):
         gamma_pdf = lambda x, a, b: np.exp( a*np.log(b) + (a-1)*np.log(x) -b*x - special.gammaln(a) ) # exp(log(0)) == 0
         dt = TR / T # Microtime resolution (doesn't seem to really make much differences due to naive downsampling...)
         u = np.arange(0, np.ceil(p7/dt)) - p6/dt # `u` is 0, 1, 2, 3, ..., with underlying fs=1/dt
-        hrf = gamma_pdf(u[1:], p1/p3, dt/p3) - gamma_pdf(u[1:], p2/p4, dt/p4) / p5 # Exclude u[0] == 0 to avoid evaluate log(0)
-        hrf = np.r_[0, hrf] # Add back hrf(t=0) == 0
+        hrf = np.zeros(len(u))
+        valid = (u > 0) # Exclude u <= 0 to make sure log() is defined
+        hrf[valid] = gamma_pdf(u[valid], p1/p3, dt/p3) - gamma_pdf(u[valid], p2/p4, dt/p4) / p5
         hrf = hrf[(np.arange(0, p7/TR)*T).astype(int)] # Subsample the HRF values to desired resolution
     elif name == 'GAM': # Matching 3dDeconvolve 'GAM' in AFNI 
         kwargs = dict(dict(p=8.6, q=0.547), **kwargs)
         p, q = kwargs['p'], kwargs['q']
         hrf = (t/(p*q))**p * np.exp(p-t/q)
+    elif name == 'TDM-early':
+        kwargs = dict(dict(P=[7.21, 17.6, 0.5, 4.34, 1.82, -3.09, duration]), **kwargs) # [4]
+        t, hrf = get_HRF('SPM', TR=TR, duration=duration, normalize=normalize, **kwargs)
+    elif name == 'TDM-late':
+        kwargs = dict(dict(P=[5.76, 21.6, 1.11, 1.72, 3.34, 0.193, duration]), **kwargs) # [4]
+        t, hrf = get_HRF('SPM', TR=TR, duration=duration, normalize=normalize, **kwargs)
     else:
         raise ValueError(f"'{name}' is not a recognized HRF model name. Valid name includes 'canonical', 'SPM', 'GAM', etc.")
     if normalize == 'area':
