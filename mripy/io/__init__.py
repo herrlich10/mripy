@@ -1471,6 +1471,12 @@ class Mask(object):
     def dump(self, fname, dtype=None):
         files = glob.glob(fname) if isinstance(fname, six.string_types) else fname
         # return np.vstack(read_afni(f).T.flat[self.index] for f in files).T.squeeze() # Cannot handle 4D...
+        # Check dimension and xform compatibility
+        GeoInfo = collections.namedtuple('GeoInfo', ['IJK', 'MAT'])
+        for f in files:
+            gi = GeoInfo(IJK=afni.get_DIMENSION(f)[:3], MAT=afni.get_affine(f))
+            assert(self.compatible(gi))
+        # Load data
         data = []
         for f in files:
             if f.endswith('.nii') or f.endswith('.nii.gz'):

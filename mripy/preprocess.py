@@ -2260,7 +2260,12 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
     # TODO: Refactor this code
     # TODO: Check the compatibility of this code with varioius selection, etc.
     regressor_cmds = []
-    if regressor_file is not None:
+    if isinstance(regressor_file, dict):
+        for regressor_label, fname in regressor_file.items():
+            total_regressors += 1
+            regressor_cmds.append(f"-stim_file {total_regressors} {fname} \
+                -stim_label {total_regressors} {regressor_label}")
+    elif regressor_file is not None:
         X = np.loadtxt(regressor_file, ndmin=2)
         all_zero_cols = ~np.any(X, axis=0) 
         regressor_labels = [f'regressor{k+1:02d}' for k in range(X.shape[1])]
