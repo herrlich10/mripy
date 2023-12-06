@@ -9,6 +9,17 @@ from tqdm import tqdm
 from . import utils, afni, io
 
 
+def p_of_score(x, score, alternative='two-sided'):
+    p = stats.percentileofscore(x, score)/100
+    if alternative == 'two-sided':
+        p = min(p, 1-p) * 2
+    elif alternative == 'greater':
+        p = 1-p
+    else: # alternative == 'less'
+        pass
+    return p
+
+
 def estimate_acf(errts_file, mask_file, X_file=None, parts=None, censors=None):
     '''
     Estimate spatial auto-correlation function of fMRI volumes from GLM errts.

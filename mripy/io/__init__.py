@@ -913,7 +913,8 @@ def read_afni(fname, remove_nii=True, return_img=False):
             fname = fname + '.HEAD'
         img = nibabel.load(fname) # Start from nibabel 2.3.0 (with brikhead.py)
         # vol = img.get_data().squeeze()
-        vol = img.get_data()
+        # vol = img.get_data()
+        vol = img.get_fdata()
         return (vol, img) if return_img else vol
     except nibabel.filebasedimages.ImageFileError:
         print('*+ WARNING: Fail to open "{0}" with nibabel, fallback to 3dAFNItoNIFTI'.format(fname)) 
