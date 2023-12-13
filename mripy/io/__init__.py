@@ -247,13 +247,21 @@ def parse_dicom_header(fname, fields=None):
     lines = subprocess.check_output(['dicom_hdr', fname]).decode('utf-8').split('\n')
     k = 0
     try:
+        use_AcquisitionDataTime = False
         while True:
-            match = re.search(r'ID Acquisition Date//(\S+)', lines[k])
+            match1 = re.search(r'ID Acquisition Date//(\S+)', lines[k])
+            # The file may have used 0008,002A instead of 0008,0022 + 0008,0032
+            match2 = re.search(r'0008 002a.+//(\S+)', lines[k])
             k += 1
-            if match:
-                header['AcquisitionDate'] = match.group(1)
+            if match1:
+                header['AcquisitionDate'] = match1.group(1)                    
                 break
-        while True:
+            if match2:
+                use_AcquisitionDataTime = True
+                header['AcquisitionDateTime'] = match2.group(1)
+                header['timestamp'] = hms2dt(header['AcquisitionDateTime'][8:], date=header['AcquisitionDateTime'][:8], timestamp=True)
+                break
+        while not use_AcquisitionDataTime:
             match = re.search(r'ID Acquisition Time//(\S+)', lines[k])
             k += 1
             if match:
@@ -403,6 +411,7 @@ MULTI_SERIES_PATTERN = r'.+?\.(\d{4})\.(\d{4}).+(\d{8,})' # Capture series numbe
 MULTI_SERIES_PATTERN2 = r'.+?\.(\d{4})\.(\d{4}).+(\d{5,}\.\d{8,})' # Capture series number, slice number, uid (5-6.8-9)
 # MULTI_SERIES_PATTERN3 = r'.+?\.(\d{4})\.(\d{4}).+(\d{5,})\.\d{5,}' # Capture series number, slice number, uid (5-6).5-9
 MULTI_SERIES_PATTERN3 = r'.+?\.(\d{4})\.(\d{4}).+(\d+)\.\d+' # Capture series number, slice number, uid
+MULTI_SERIES_PATTERN4 = r'.+?\.(\d{1,4})\.(\d{1,4})\..+\.(\d+)\.\d+' # Capture series number, slice number, uid
 
 def _sort_multi_series(files):
     '''
@@ -412,7 +421,7 @@ def _sort_multi_series(files):
     timestamps = []
     infos = []
     for f in files:
-        match = re.search(MULTI_SERIES_PATTERN3, f)
+        match = re.search(MULTI_SERIES_PATTERN4, f)
         # infos.append((f, int(match.group(2)), int(match.group(3))))
         infos.append((f, int(match.group(2)), float(match.group(3))))
     prev_slice = sys.maxsize
@@ -430,6 +439,14 @@ def _sort_multi_series(files):
     return series, timestamps
 
 
+def list_files_by_type(folder, exts):
+    return sorted(itertools.chain(*[glob.glob(f"{folder}/*{ext}") for ext in exts]))
+
+
+def list_dicom_files(folder):
+    return list_files_by_type(folder, ['.IMA', '.dcm'])
+
+
 def sort_dicom_series(folder, series_pattern=SERIES_PATTERN):
     '''
     Parameters
@@ -443,7 +460,7 @@ def sort_dicom_series(folder, series_pattern=SERIES_PATTERN):
         [{'0001': [file0, file1, ...], '0002': [files], ...}, {study1}, ...]
     '''
     # Sort files into series
-    files = sorted(glob.glob(path.join(folder, '*.IMA')))
+    files = list_dicom_files(folder)
     series = collections.OrderedDict()
     for f in files:
         filename = path.basename(f)
@@ -479,7 +496,7 @@ def sort_dicom_series(folder, series_pattern=SERIES_PATTERN):
 
 def filter_dicom_files(files, series_numbers=None, instance_numbers=None, series_pattern=MULTI_SERIES_PATTERN3):
     if isinstance(files, six.string_types) and path.isdir(files):
-        files = glob.glob(path.join(files, '*.IMA'))
+        files = list_dicom_files(files)
     if not isinstance(series_numbers, collections.Iterable):
         series_numbers = [series_numbers]
     if not isinstance(instance_numbers, collections.Iterable):
@@ -539,7 +556,7 @@ def parse_series_info(fname, timestamp=False, shift_time=None, series_pattern=SE
     if isinstance(fname, six.string_types): # A single file or a folder
         if path.isdir(fname):
             # Assume there is only one series in the folder, so that we only need to consider the first file.
-            fname = sorted(glob.glob(path.join(fname, '*.IMA')))[0]
+            fname = list_dicom_files(fname)[0]
         # Select series by series number (this may fail if there is multi-series in the folder)
         filepath, filename = path.split(fname)
         match = re.match(series_pattern, filename)

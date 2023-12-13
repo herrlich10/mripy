@@ -122,7 +122,7 @@ tag_parsers = {
     # ([ms], ordered corresponding to the slice numbering) in vendor private field of the DICOM header. 
     # This slice-by-slice timing information is generic (transparent to the multiband factor) for any protocol."
     '0019,1029': ('MosaicRefAcqTimes', vr_parsers['FD']),
-    '0020,0010': ('StudyID', lambda x : int(vr_parsers['SH'](x))),
+    '0020,0010': ('StudyID', vr_parsers['SH']), # May not be a number
     '0020,0011': ('SeriesNumber', vr_parsers['IS']),
     '0020,0012': ('AcquisitionNumber', vr_parsers['IS']),
     '0020,0013': ('InstanceNumber', vr_parsers['IS']),
