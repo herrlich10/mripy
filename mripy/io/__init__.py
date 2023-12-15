@@ -742,8 +742,85 @@ def read_txt(fname, dtype=float, comment='#', delimiter=None, skiprows=0, nrows=
 
 
 def read_stim(fname):
+    '''
+    Read AFNI style stimulus times file (for `3dDeconvolve -stim_times`).
+
+    The function can handle standard event format that has at most one amplitude
+    and one duration associated with each onset, i.e., "onset*amplitude:duration".
+
+    Parameters
+    ----------
+    fname : str
+        Stimulus times file name.
+
+    Returns
+    -------
+    stims : list of arrays
+        Each array in the list contains the stimulus times for a run.
+        If only stimulus onsets are specified, each array will be 1D.
+        If amplitude and/or duration are also included, each array will be 2D, 
+        and the columns corespond to onset, amplitude, duration in that order.
+    '''
     with open(fname) as fi:
-        return [np.array([]) if line[0] == '*' else np.float_(line.split()) for line in fi if line.strip()]
+        stims = []
+        for line in fi:
+            if line.strip(): # Discard empty lines
+                if line[0] == '*': # The stimulus doesn't appear in this run
+                    stims.append(np.array([]))
+                else: 
+                    # Allow for "onset*amplitude:duration"
+                    events = line.split()
+                    events = [re.split(r'\*|:', event) for event in events]
+                    stims.append(np.float_(events).squeeze())
+        return stims
+
+
+def write_stim(fname, onsets, durations=None, amplitudes=None, fmt='%.3f'):
+    '''
+    Write AFNI style stimulus times file (for `3dDeconvolve -stim_times`).
+
+    Parameters
+    ----------
+    fname : str
+        Output file name.
+    onsets : list of arrays
+        Each array in the list specifies the stimulus onset times for a run.
+        Different runs may have different lengths (different number of stimuli).
+        An empty array suggests that the stimulus is not present in the run, 
+        and the corresponding line will show a single "*" as placeholder.
+    durations : list of arrays
+        Optional. Useful for modeling internally generated conditions, e.g., 
+        binocular rivalry.
+        Each array in the list specifies the duration of each stimulus in a run.
+        If provided, the timing is formatted as "onset:duration", 
+        which can be used by `3dDeconvolve -stim_times_AM1` with "dmUBLOCK" model.
+        Read AFNI help for more information.
+    amplitudes : list of arrays
+        Optional. Useful for parametric design.
+        Each array in the list specifies the amplitude of each stimulus in a run.
+        If provided, the timing is formatted as "onset*amplitude", 
+        which can be used by `3dDeconvolve -stim_times_AM2`. 
+        Read AFNI help for more information.
+    '''
+    if durations is not None:
+        assert(len(durations)==len(onsets))
+        assert(all([len(duration)==len(onset) for duration, onset in zip(durations, onsets)]))
+    if amplitudes is not None:
+        assert(len(amplitudes)==len(onsets))
+        assert(all([len(amplitude)==len(onset) for amplitude, onset in zip(amplitudes, onsets)]))
+    with open(fname, 'w') as fo:
+        for run_idx in range(len(onsets)):
+            if len(onsets[run_idx]) > 0:
+                stim_strs = []
+                for stim_idx in range(len(onsets[run_idx])):
+                    stim_strs.append(fmt % onsets[run_idx][stim_idx])
+                    if amplitudes is not None:
+                        stim_strs[stim_idx] += '*' + (fmt % amplitudes[run_idx][stim_idx])
+                    if durations is not None:
+                        stim_strs[stim_idx] += ':' + (fmt % durations[run_idx][stim_idx])
+                fo.write('\t'.join(stim_strs) + '\n')
+            else:
+                fo.write('*\n')             
 
 
 # ========== gzip ==========
