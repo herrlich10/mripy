@@ -1980,7 +1980,8 @@ def align_S2E(base_file, suma_dir, out_file=None, **kwargs):
     return outputs
 
 
-def align_anat2epi(anat_file, epi_file, out_file, base_file=None, init_oblique=None, init_epi_rotate=None, init_anat_rotate=None):
+def align_anat2epi(anat_file, epi_file, out_file, base_file=None, init_oblique=None, 
+    init_epi_rotate=None, init_anat_rotate=None, more_options=None):
     '''
     Different init methods are mutual exclusive (i.e., at most one init method could be used at a time).
     '''
@@ -2022,7 +2023,7 @@ def align_anat2epi(anat_file, epi_file, out_file, base_file=None, init_oblique=N
     try:
         os.chdir(temp_dir)
         res = utils.run(f"align_epi_anat.py -anat2epi -anat anat_init.nii -epi epi_init.nii \
-            -epi_base 0 -epi_strip 3dAutomask -tshift off -volreg off -deoblique off \
+            -epi_base 0 -epi_strip 3dAutomask -tshift off -volreg off -deoblique off {more_options} \
             -suffix _al -overwrite", error_pattern='error')
         outputs['cost'] = parse_cost(res['output'])
     finally:

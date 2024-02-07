@@ -463,7 +463,7 @@ def sort_dicom_series(folder, series_pattern=SERIES_PATTERN):
     files = list_dicom_files(folder)
     series = collections.OrderedDict()
     for f in files:
-        filename = path.basename(f)
+        filename = f # path.basename(f) # 2024-01-11: This bug has lurked here for so long!
         match = re.search(series_pattern, filename)
         sn = match.group(1)
         if sn not in series:

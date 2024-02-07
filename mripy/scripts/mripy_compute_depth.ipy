@@ -89,7 +89,7 @@ if __name__ == '__main__':
         prefix, ext = afni.split_out_file(args.base)
     else:
         prefix, ext = afni.split_out_file(args.prefix)
-    depth_out = prefix + '.depth'
+    depth_out = prefix + '.depth' # TODO: Bug if I specify -o mean_epi.depth_c.nii
     depth_out_file = depth_out + ext
     weight_out = prefix + '.weight'
     weight_out_file = weight_out + ext

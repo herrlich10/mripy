@@ -827,8 +827,8 @@ class Epochs(utils.Savable, object):
         return df
 
     def plot(self, hue=None, style=None, row=None, col=None, hue_order=None, style_order=None, row_order=None, col_order=None,
-        palette=None, dashes=None, figsize=None, legend=True, bbox_to_anchor=None, subplots_kws=None, average_kws=None, 
-        axs=None, **kwargs):
+        palette=None, dashes=None, figsize=None, legend=True, bbox_to_anchor=None, show_info=True, 
+        subplots_kws=None, average_kws=None, axs=None, **kwargs):
         assert(self.info['conditions'] is not None)
         conditions = OrderedDict([(condition, np.unique(levels)) for condition, levels in zip(self.info['conditions'], np.array([ev.split('/') for ev in self.event_id]).T) if condition in [hue, style, row, col]])
         con_sel = [[hue, style, row, col].index(condition) for condition in conditions]
@@ -851,7 +851,6 @@ class Epochs(utils.Savable, object):
         for rid, row_val in enumerate(row_order):
             for cid, col_val in enumerate(col_order):
                 plt.sca(axs[rid,cid])
-                show_info = True
                 for hid, hue_val in enumerate(hue_order):
                     for sid, style_val in enumerate(style_order):
                         event = '/'.join(np.array([hue_val, style_val, row_val, col_val])[con_sel])
