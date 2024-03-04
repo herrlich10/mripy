@@ -24,7 +24,7 @@ def rot2trans(params, radius=50):
     trans : Nx6 array
         Motion parameters expressed as pure translation in a 6D space.
     '''
-    trans = params[:,3:]/180*pi * radius
+    trans = params[:,3:]/180*np.pi * radius
     return np.c_[params[:,:3], trans]
 
 

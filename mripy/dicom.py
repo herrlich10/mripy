@@ -62,18 +62,17 @@ def parse_Siemens_CSA2(b):
 
 Siemens = {
     'PartialFourier': {
-        '0x10': None,
-        '0x8': '7/8',
-        '0x4': '6/8',
-        '0x2': '5/8',
-    },
+        16: None,
+        8: '7/8',
+        4: '6/8',
+        2: '5/8',    },
     'PATMode': {
-        '0x1': None, #??
-        '0x2': 'GRAPPA',
+        1: None, #??
+        2: 'GRAPPA',
     },
     'RefScanMode': {
-        '0x1': None, #??
-        '0x4': 'GRE',
+        1: None, #??
+        4: 'GRE',
     },
 }
 
@@ -143,14 +142,14 @@ custom_parsers = {
     'FOV': lambda header: header['resolution'][:2] * header['AcquisitionMatrix'], # Bug: Is "PixelSpacing" also ordered as frequency/phase like "AcquisitionMatrix" does??
     'orientation': lambda header: ('oblique-' if len(header['slice_orientation'])>3 else '') + {'Sag': 'sagittal', 'Cor': 'coronal', 'Tra': 'transversal'}[header['slice_orientation'][:3]],
     'GRAPPA': lambda header: int(header['acceleration_factor'].split()[0][1:]) if 'acceleration_factor' in header and header['acceleration_factor'].startswith('p') else 0, # TODO: The text can be "p2" or "p2 s4". What does "s4" mean?
-    'PhasePartialFourier': lambda header: Siemens['PartialFourier'][header['CSA2']['PhasePartialFourier']],
-    'SlicePartialFourier': lambda header: Siemens['PartialFourier'][header['CSA2']['SlicePartialFourier']],
+    'PhasePartialFourier': lambda header: Siemens['PartialFourier'][int(header['CSA2']['PhasePartialFourier'], 0)],
+    'SlicePartialFourier': lambda header: Siemens['PartialFourier'][int(header['CSA2']['SlicePartialFourier'], 0)],
     'MultiBand': lambda header: int(re.search('MB(\d+)', header['ImageComments']).group(1)) if 'MB' in header['ImageComments'] else None, # https://github.com/CMRR-C2P/MB/issues/223
     'distortion_correction': lambda header: re.search('(ND|DIS2D|DIS3D)', header['reconstruction']).group(1),
     'ReferenceAmplitude': lambda header: header['CSA2']['ReferenceAmplitude'],
-    'PATMode': lambda header: Siemens['PATMode'][header['CSA2']['PATMode']],
+    'PATMode': lambda header: Siemens['PATMode'][int(header['CSA2']['PATMode'], 0)],
     'RefLinesPE': lambda header: header['CSA2']['RefLinesPE'],
-    'RefScanMode': lambda header: Siemens['RefScanMode'][header['CSA2']['RefScanMode']],
+    'RefScanMode': lambda header: Siemens['RefScanMode'][int(header['CSA2']['RefScanMode'], 0)],
     'TotalScanTime': lambda header: header['CSA2']['TotalScanTimeSec'],
     'timestamp': lambda header: datetime.combine(header['AcquisitionDate'], header['AcquisitionTime']).timestamp(), 
 }
