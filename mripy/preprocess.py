@@ -421,9 +421,30 @@ def nudge_cmd2mat(nudge_cmd, in_file, return_inverse=False):
 
 def copy_S2E_mat(src, dst):
     # This is the S2E mat in afni sense (because when aligning sv to exp, source=sv, base=exp)
+    # The same as in SurfVol_Alnd_Exp.E2A.1D
     utils.run(f"3drefit -atrcopy {src} ALLINEATE_MATVEC_S2B_000000 {dst}")
-    # This is the E2S mat
+    # This is the E2S mat in afni sense
+    # The same as in SurfVol_Alnd_Exp.A2E.1D
     utils.run(f"3drefit -atrcopy {src} ALLINEATE_MATVEC_B2S_000000 {dst}")
+
+
+def set_S2E_mat(surf_vol, S2E_mat=None, E2S_mat=None):
+    '''
+    Set surf-to-exp transform for surf_vol.
+
+    TODO: The term is confusing now.
+    '''
+    prefix = afni.split_out_file(surf_vol)[0]
+    if S2E_mat is None:
+        S2E_mat = f"{prefix}.A2E.1D"
+    # This is the E2S mat in afni sense
+    # The same as in SurfVol_Alnd_Exp.A2E.1D
+    utils.run(f"3drefit -atrfloat ALLINEATE_MATVEC_B2S_000000 '{S2E_mat}' {surf_vol}")
+    if E2S_mat is None:
+        E2S_mat = f"{prefix}.E2A.1D"
+    # This is the E2S mat in afni sense
+    # The same as in SurfVol_Alnd_Exp.A2E.1D
+    utils.run(f"3drefit -atrfloat ALLINEATE_MATVEC_S2B_000000 '{E2S_mat}' {surf_vol}")
 
 
 def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kws=None, volreg_kws=None, 

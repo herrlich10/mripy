@@ -775,7 +775,8 @@ def read_stim(fname):
         return stims
 
 
-def write_stim(fname, onsets, durations=None, amplitudes=None, fmt='%.3f'):
+def write_stim(fname, onsets, durations=None, amplitudes=None, fmt='%.3f', 
+               ignore_negative=True):
     '''
     Write AFNI style stimulus times file (for `3dDeconvolve -stim_times`).
 
@@ -801,6 +802,11 @@ def write_stim(fname, onsets, durations=None, amplitudes=None, fmt='%.3f'):
         If provided, the timing is formatted as "onset*amplitude", 
         which can be used by `3dDeconvolve -stim_times_AM2`. 
         Read AFNI help for more information.
+    fmt : str
+        String format for each number.
+    ignore_negative : bool
+        Exclude events with negative onset time (i.e., occur before scan starts)
+        These events will be ignored by 3dDeconvolve in AFNI anyway.
     '''
     if durations is not None:
         assert(len(durations)==len(onsets))
@@ -813,6 +819,8 @@ def write_stim(fname, onsets, durations=None, amplitudes=None, fmt='%.3f'):
             if len(onsets[run_idx]) > 0:
                 stim_strs = []
                 for stim_idx in range(len(onsets[run_idx])):
+                    if ignore_negative and onsets[run_idx][stim_idx] < 0:
+                        continue
                     stim_strs.append(fmt % onsets[run_idx][stim_idx])
                     if amplitudes is not None:
                         stim_strs[stim_idx] += '*' + (fmt % amplitudes[run_idx][stim_idx])
