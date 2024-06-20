@@ -2026,6 +2026,8 @@ def align_anat2epi(anat_file, epi_file, out_file, base_file=None, init_oblique=N
         'xform_file': f"{prefix}.aff12.1D",
         'cost': None,
     }
+    if more_options is None:
+        more_options = ''
 
     transforms = []
     utils.run(f"3dcopy {anat_file} {temp_dir}/anat_init.nii -overwrite")
