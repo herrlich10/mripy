@@ -701,6 +701,15 @@ def prep_mp2rage(dicom_dirs, out_file='T1.nii', unwarp=False, dicom_ext='.IMA'):
         A list of dicom file folders, e.g., ['T101', 'T102', ...], or 
         a glob pattern like 'raw_fmri/T1??'
     '''
+    # Retrieve dicom information (for labels like UNI, ND, etc.)
+    label2dicom_dir = retrieve_mp2rage_labels(dicom_dirs, dicom_ext=dicom_ext)
+    # If DIS2D is not checked during scanning, or _ND data is not saved, 
+    # INV2 will be the only result (either corrected or not)
+    INV2_tgt = 'INV2_ND' if 'INV2_ND' in label2dicom_dir else 'INV2'
+    if not INV2_tgt == 'INV2_ND' and unwarp: # Has no _ND data but want unwarp
+        warnings.warn('No "_ND" label is detected. Fall back to `warp=False`.')
+        unwarp = False
+
     pc = utils.PooledCaller()
     prefix, ext = afni.split_out_file(out_file)
     outputs = {
@@ -716,28 +725,26 @@ def prep_mp2rage(dicom_dirs, out_file='T1.nii', unwarp=False, dicom_ext='.IMA'):
 
     if not all_finished(outputs):
         temp_dir = utils.temp_folder()
-        # Retrieve dicom information (for labels like UNI, ND, etc.)
-        label2dicom_dir = retrieve_mp2rage_labels(dicom_dirs, dicom_ext=dicom_ext)
 
         # Convert dicom files
-        for label in ['UNI_Images', 'INV2_ND', 'INV2']:
+        for label in (['UNI_Images', 'INV2_ND', 'INV2'] if INV2_tgt == 'INV2_ND' else ['UNI_Images', 'INV2']):
             pc.run(io.convert_dicom, label2dicom_dir[label][1], f"{temp_dir}/{label}.nii", dicom_ext=dicom_ext)
         pc.wait()
 
         # Generate skull strip mask
-        utils.run(f"3dcalc -a {temp_dir}/UNI_Images.nii -b {temp_dir}/INV2_ND.nii \
+        utils.run(f"3dcalc -a {temp_dir}/UNI_Images.nii -b {temp_dir}/{INV2_tgt}.nii \
             -expr 'a*b' -float -prefix {temp_dir}/INV2xUNI.nii -overwrite") # INV2*UNI is the recommended method by {Fujimoto2014}, but too aggressive with 3dSkullStrip
-        for label in ['INV2_ND', 'INV2xUNI']:
+        for label in [INV2_tgt, 'INV2xUNI']:
             pc.run(f"3dSkullStrip -orig_vol -prefix {temp_dir}/{label}_ns.nii -overwrite -input {temp_dir}/{label}.nii")
         pc.wait()
-        utils.run(f"3dcalc -a {temp_dir}/INV2_ND_ns.nii -b {temp_dir}/INV2xUNI_ns.nii \
+        utils.run(f"3dcalc -a {temp_dir}/{INV2_tgt}_ns.nii -b {temp_dir}/INV2xUNI_ns.nii \
             -expr 'max(step(a),step(b))' -prefix {temp_dir}/mask.nii -overwrite") # Tfter_indexe the union of the two masks as the final brain mask
         utils.run(f"3dmask_tool -dilate_input -1 1 -prefix {temp_dir}/mask.nii -overwrite -input {temp_dir}/mask.nii") # Remove "spikes" on the surface of the mask
 
         # Generate merged T1
         utils.run(f"3dcalc -a {temp_dir}/UNI_Images.nii -m {temp_dir}/mask.nii \
             -expr 'a*m' -prefix {outputs['ns_file']} -overwrite")
-        utils.run(f"3dcalc -a {temp_dir}/UNI_Images.nii -b {temp_dir}/INV2_ND.nii -m {temp_dir}/mask.nii \
+        utils.run(f"3dcalc -a {temp_dir}/UNI_Images.nii -b {temp_dir}/{INV2_tgt}.nii -m {temp_dir}/mask.nii \
             -expr 'a*m+2*b*(1-m)' -prefix {outputs['out_file']} -overwrite") # Generate "merged" file
 
         if unwarp:
