@@ -291,6 +291,18 @@ def apply_transforms(transforms, base_file, in_file, out_file, interp=None, res=
     '''
     Note that last transform applys first, as in AFNI.
     Transforms can be modified as "xform.aff12.1D -I" for inversion.
+
+    Parameters
+    ----------
+    interp : str
+        Interpolation method.
+        - 'NN': nearest neighbor. Good for mask or altas (integer-valued dataset)
+        - 'linear'
+        - 'cubic'
+        - 'quintic'
+        - 'wsinc5' (default): windowed sinc interpolation with +/- 5 grid points.
+            Slowest but with best quality. Should reduce the smoothing artifacts
+            from lower order interpolation methods (from AFNI 3dAllineate docs).
     '''
     if isinstance(transforms, six.string_types):
         transforms = [transforms]
@@ -448,7 +460,7 @@ def set_S2E_mat(surf_vol, S2E_mat=None, E2S_mat=None):
 
 
 def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kws=None, volreg_kws=None, 
-    template=None, template_pool=None, template_candidate_runs=None, final_resample=True, final_res=None):
+    template=None, template_pool=None, template_candidate_runs=None, final_resample=True, final_res=None, interp=None):
     '''
     Parameters
     ----------
@@ -581,15 +593,15 @@ def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kw
     if final_resample:
         if blip_results is not None:
             pc((pc.run(apply_transforms, [f"{prefix}.pass2.aff12.1D", blip_result['warp_file']], \
-                f"{temp_dir}/template.pass2.nii", in_file, output['out_file'], res=final_res) \
+                f"{temp_dir}/template.pass2.nii", in_file, output['out_file'], res=final_res, interp=interp) \
                 for k, (prefix, blip_result, in_file, output) in enumerate(zip(temp_prefixs, blip_results, in_files, outputs))), pool_size=4)
         elif best_reverse is not None:
             pc((pc.run(apply_transforms, [f"{prefix}.pass2.aff12.1D", f"{prefix}.blip.for2mid.warp.nii"], \
-                f"{temp_dir}/template.pass2.nii", in_file, output['out_file'], res=final_res) \
+                f"{temp_dir}/template.pass2.nii", in_file, output['out_file'], res=final_res, interp=interp) \
                 for k, (prefix, in_file, output) in enumerate(zip(temp_prefixs, in_files, outputs))), pool_size=4)
         else: # volreg only
             pc((pc.run(apply_transforms, [f"{prefix}.pass2.aff12.1D"], \
-                f"{temp_dir}/template.pass2.nii", in_file, output['out_file'], res=final_res) \
+                f"{temp_dir}/template.pass2.nii", in_file, output['out_file'], res=final_res, interp=interp) \
                 for k, (prefix, in_file, output) in enumerate(zip(temp_prefixs, in_files, outputs))), pool_size=4)
     else:
         pc(pc.run(f"3dcopy {prefix}.pass2.nii {output['out_file']} -overwrite") for prefix, output in zip(temp_prefixs, outputs))
