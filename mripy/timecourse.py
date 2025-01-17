@@ -628,7 +628,7 @@ class Epochs(utils.Savable, object):
         self.times = create_times(tmin, tmax, dt)
         x = raw.data
         if hamm is not None:
-            h = signal.hamming(hamm)
+            h = signal.windows.hamming(hamm)
             h = h/np.sum(h)
             x = signal.filtfilt(h, [1], x, axis=-1)
         f = interpolate.interp1d(raw.times, x, axis=-1, kind=interp, fill_value=np.nan, bounds_error=False)

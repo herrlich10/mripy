@@ -464,6 +464,11 @@ def align_epi(in_files, out_files, best_reverse=None, blip_results=None, blip_kw
     '''
     Parameters
     ----------
+    best_reverse : dict
+        best_reverse = {
+            'epi01.nii': ('reverse02.nii', 'after'), 
+            'epi03.nii': ('reverse02.nii', 'before'),
+        }
     blip_results : list or dict
         E.g., 1) {'warp_file': '*.volreg.warp.nii', 'blip_file': '*.volreg.blip.nii'}
         2) {'warf_file': 'epi01.for2mid.warp.nii'}
@@ -2327,6 +2332,8 @@ def glm(in_files, out_file, design, model='BLOCK', contrasts=None, TR=None, pick
         if perblock:
             stim_cmd = f"-stim_times_IM {total_regressors} "
         else:
+            print('qcc')
+            print(timing)
             if isinstance(timing, six.string_types) and ('dmUBLOCK' in shlex.split(timing)[1]):
                 # For 'dmUBLOCK', e.g., in the transient-sustain model
                 # TODO: Need to add -stim_times_AM2

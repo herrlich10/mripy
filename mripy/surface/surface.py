@@ -156,7 +156,7 @@ def tile_with_regions(verts, faces, size, seed=0):
     raise NotImplementedError
 
 
-def quadruple_mesh(verts, faces, power=1, mask=None, values=[]):
+def quadruple_mesh(verts, faces, power=1, mask=None, patch_faces=None, values=[]):
     '''
     A face will be divided if any of its three nodes are within the mask.
     '''
@@ -166,12 +166,20 @@ def quadruple_mesh(verts, faces, power=1, mask=None, values=[]):
         nv = [v for v in verts]
         nv_parent = {}
         nf = []
+        if patch_faces is not None:
+            npf = []
         def get_new_vert(n1, n2):
             n_idx = nv_parent.setdefault(tuple(sorted([n1, n2])), len(nv))
             if n_idx == len(nv):
-                nv.append((verts[n1]+verts[n2])/2)
+                if np.any(verts[n1]) and np.any(verts[n2]):
+                    nv.append((verts[n1]+verts[n2])/2)
+                else: 
+                    # If either vertex is virtual (==[0,0,0] as in patch), 
+                    # the new one will also be virtual.
+                    # Here we assume that no "good" vertex will be [0,0,0]
+                    nv.append([0, 0, 0])
             return n_idx
-        for f in faces:
+        for f_idx, f in enumerate(faces):
             if mask is not None and set(f).isdisjoint(mask):
                 # Skip dividing this face
                 nf.append(f)
@@ -182,9 +190,19 @@ def quadruple_mesh(verts, faces, power=1, mask=None, values=[]):
                 # The triangle should always list the vertices in a counter-clockwise direction 
                 # with respect to an outward pointing surface normal vector [Noah Benson]
                 nf.extend([(f[0], nv2, nv1), (nv2, f[1], nv0), (nv1, nv0, f[2]), (nv0, nv1, nv2)])
+                if patch_faces is not None:
+                    if not any(patch_faces[f_idx]):
+                        npf.extend([(0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0)])
+                    else:
+                        npf.extend(nf[-4:])
         verts = nv
         faces = nf
-    return np.array(verts), np.array(faces)
+        if patch_faces is not None:
+            patch_faces = npf
+    if patch_faces is not None:
+        return np.array(verts), np.array(patch_faces)
+    else:
+        return np.array(verts), np.array(faces)
 
 
 def immediate_neighbors(verts, faces, mask=None, return_array=False):
