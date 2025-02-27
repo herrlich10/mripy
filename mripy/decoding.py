@@ -110,10 +110,12 @@ def cross_validate_with_permutation(model, X, y, groups, rois=None, n_permutatio
     def cross_validate(X, y, groups, roi, permute):
         if permute:
             y = permute_within_group(y, groups)
-        scores = model_selection.cross_validate(model, X, y, groups, \
+        scores = model_selection.cross_validate(model, X, y, groups=groups, \
             scoring=scoring, cv=cv, return_train_score=True, n_jobs=1)
-        res = OrderedDict(roi=roi, permute=permute, train=np.mean(scores['train_performance']), 
-            test=np.mean(scores['test_performance']))
+        # res = OrderedDict(roi=roi, permute=permute, train=np.mean(scores['train_performance']), 
+        #     test=np.mean(scores['test_performance']))
+        res = OrderedDict(roi=roi, permute=permute, train=np.mean(scores['train_score']), 
+            test=np.mean(scores['test_score']))
         return res
     res = []
     for XX, yy, gg, roi in zip(X, y, groups, rois):

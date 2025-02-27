@@ -624,10 +624,11 @@ def convert_dicom(dicom_dir, out_file=None, dicom_ext=None, interactive=False, e
         with open('uniq_image_list.txt', 'w') as fo:
             subprocess.check_call(['uniq_images'] + glob.glob('*'+dicom_ext), stdout=fo) # Prevent shell injection by not using shell=True with user defined string
         interactive_cmd = '' if interactive else '-gert_quit_on_err'
+        # Bug fixed 2025-02-26:  ** warning, have signed short overflow to unsigned, # e.g., ConStim/S02/func
         utils.run(f"Dimon -infile_list uniq_image_list.txt \
             -gert_create_dataset -gert_outdir '{out_dir}' -gert_to3d_prefix '{prefix+ext}' -overwrite \
             -dicom_org -use_obl_origin -save_details Dimon.details {interactive_cmd} \
-            {extra_cmd if extra_cmd is not None else ''}")
+            {extra_cmd if extra_cmd is not None else ''}", error_whitelist=r'\*\* warning')
     finally:
         os.chdir(old_path)
 
