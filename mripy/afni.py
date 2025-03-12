@@ -119,10 +119,30 @@ def split_out_file(out_file, split_path=False, trailing_slash=False):
     >>> split_out_file('dset+tlrc.BRIK', split_path=True, trailing_slash=True)
     ('', 'dset', '+tlrc.HEAD')
     '''
+    known_exts ={
+        # Volume
+        '.nii',
+        '.nii.gz',
+        '.mgz',
+        # Surface
+        '.gii',
+        '.mgz',
+        '.asc',
+        '.1D.dset',
+        '.niml.dset',
+        '.gii.dset',
+        '.1D.roi',
+        '.niml.roi',
+        # Generic
+        '.1D',
+        '.csv',
+        '.json',
+    }
+    known_pattern = '|'.join(known_exts)
     out_dir, out_name = path.split(out_file)
     if trailing_slash and out_dir:
         out_dir += '/'
-    match = re.match(r'(.+)(.nii|.nii.gz|.1D|.1D.dset|.1D.roi|.niml.dset|.niml.roi|.gii.dset|.csv)$', out_name)
+    match = re.match(rf"(.+)({'|'.join(known_exts)})$", out_name)
     if match:
         prefix, ext = match.groups()
     else:
