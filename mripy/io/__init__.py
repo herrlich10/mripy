@@ -1128,9 +1128,11 @@ def write_gii(fname, verts, faces):
     img = nibabel.gifti.GiftiImage(darrays=[verts, faces])
     try: # The old way (api removed)
         nibabel.gifti.write(img, fname)
-    except AttributeError: # The new way 
-        with open(fname, 'wb') as fo:
-            fo.write(img.to_xml())
+    # except AttributeError: # The new way 
+    #     with open(fname, 'wb') as fo:
+    #         fo.write(img.to_xml())
+    except nibabel.deprecator.ExpiredDeprecationError: # 2025-04-17 for latest nibabel
+        nibabel.save(img, fname)
 
 
 def read_label(fname):
