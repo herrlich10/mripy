@@ -82,11 +82,12 @@ if __name__ == '__main__':
         for sn, files in study.items():
             if afni.has_afni:
                 info = io.parse_series_info(files, parser=dicom_parser)
-                desc = '{0} ({1}): {2}, {3}{4}'.format(sn,
+                desc = '{0} ({1}): {2}, {3}{4} ({5})'.format(sn,
                     info['n_volumes'] if info['n_volumes']>1 else len(files),
                     info['ProtocolName'],
                     'x'.join(['%.2g' % x for x in info['resolution']]),
-                    (', TR=%.2f' % info['TR']) if info['TR'] is not None else '')
+                    (', TR=%.2f' % info['TR']) if info['TR'] is not None else '',
+                    info.get('reconstruction', ''))
             else:
                 desc = '{0} ({1})'.format(sn, len(files))
             descriptions[-1][sn] = desc

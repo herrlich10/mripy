@@ -100,18 +100,36 @@ def cross_validate_ext(model, X, y, groups=None, cv=None, pred_kws=None, method=
     return res
 
 
-def cross_validate_with_permutation(model, X, y, groups, rois=None, n_permutations=1000, scoring=None, cv=None):
+def cross_validate_with_permutation(model, X, y, groups, rois=None, n_permutations=1000, scoring=None, cv=None, test_mean=False):
     if rois is None:
         X, y, groups, rois = [X], [y], [groups], ['NA']
     if cv is None:
         cv = model_selection.LeaveOneGroupOut() # One group of each run
     if scoring is None:
         scoring = {'performance': metrics.make_scorer(metrics.accuracy_score)}
+
+    def within_class_average(X, y):
+        y_new = np.unique(y)
+        X_new = []
+        for yy in y_new:
+            X_new.append(X[y==yy].mean(axis=0))
+        return np.array(X_new), y_new
+
     def cross_validate(X, y, groups, roi, permute):
         if permute:
             y = permute_within_group(y, groups)
-        scores = model_selection.cross_validate(model, X, y, groups=groups, \
-            scoring=scoring, cv=cv, return_train_score=True, n_jobs=1)
+        if not test_mean:
+            scores = model_selection.cross_validate(model, X, y, groups=groups, \
+                scoring=scoring, cv=cv, return_train_score=True, n_jobs=1)
+        else:
+            scorer = metrics.check_scoring(model, scoring)
+            scores = {'test_score': [], 'train_score': []}
+            for train_idx, test_idx in cv.split(X, y, groups):
+                X_train, X_test = X[train_idx], X[test_idx]
+                y_train, y_test = y[train_idx], y[test_idx]
+                model.fit(X_train, y_train)
+                scores['test_score'].append(scorer(model, *within_class_average(X_test, y_test)))
+                scores['train_score'].append(scorer(model, *within_class_average(X_train, y_train)))
         # res = OrderedDict(roi=roi, permute=permute, train=np.mean(scores['train_performance']), 
         #     test=np.mean(scores['test_performance']))
         res = OrderedDict(roi=roi, permute=permute, train=np.mean(scores['train_score']), 

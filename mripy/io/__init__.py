@@ -328,11 +328,13 @@ def parse_dicom_header(fname, fields=None):
             if match:
                 header['BW'] = float(match.group(1)) # Hz/pixel
                 break
-        while True:
+        while True: # This field can be missing
             match = re.search(r'ACQ Protocol Name//(.+)', lines[k])
             k += 1
             if match:
                 header['ProtocolName'] = match.group(1).strip()
+                break
+            if lines[k][:9] > '0018 1030':
                 break
         while True:
             match = re.search(r'ACQ Flip Angle//(\S+)', lines[k])
@@ -352,7 +354,8 @@ def parse_dicom_header(fname, fields=None):
             if match:
                 header['n_slices'] = int(match.group(1))
                 break
-            if lines[k].startswith('0020'):
+            # if lines[k].startswith('0020'):
+            if lines[k][:9] > '0019 100a':
                 break
         while True:
             match = re.search(r'REL Study ID//(\d+)', lines[k])
@@ -390,7 +393,15 @@ def parse_dicom_header(fname, fields=None):
             if match:
                 header['iPAT'] = match.group(1)
                 break
-            if lines[k].startswith('Group'):
+            if not lines[k].startswith('Group') and lines[k][:9] > '0051 1011':
+                break
+        while True: # This field is optional
+            match = re.search(r'0051 1016.+//(.+)', lines[k])
+            k += 1
+            if match:
+                header['reconstruction'] = match.group(1).strip()
+                break
+            if not lines[k].startswith('Group') and lines[k][:9] > '0051 1016':
                 break
     except IndexError as error:
         print('** Failed to process "{0}"'.format(fname))
